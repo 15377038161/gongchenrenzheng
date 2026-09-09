@@ -1,5 +1,9 @@
 # 项目上下文
 
+## 项目简介
+
+智识工作台：超星智能体的重设计交互外壳。通过 iframe 嵌入超星智能体对话页（robot.chaoxing.com/coze?unitId=1731&robotId=9a31c8e736704a0b9d57b35c73da681f），外层提供书房纸墨风格的 UI 壳：品牌头栏、能力速览侧栏、排版式欢迎屏、iframe 加载/重载控制。视觉规范见 DESIGN.md。
+
 ## 技术栈
 
 - **核心**: Vite 7, React 19, TypeScript, Express
