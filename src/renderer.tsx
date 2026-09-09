@@ -4,6 +4,7 @@ import { MarkdownView } from './components/MarkdownView';
 import { AgentProgress } from './components/AgentProgress';
 import { BackgroundEffect } from './components/BackgroundEffect';
 import {
+  type Attachment,
   type ConversationRow,
   type MessageRow,
   listConversations,
@@ -28,45 +29,134 @@ interface UiMessage {
   role: 'user' | 'assistant';
   content: string;
   thoughts: string[];
+  attachments: Attachment[];
   streaming: boolean;
 }
 
+/* ===== Web Speech API 类型（Chrome 私有实现的最小声明） ===== */
+interface SpeechResultItem {
+  transcript: string;
+}
+interface SpeechResultList {
+  length: number;
+  [index: number]: ArrayLike<SpeechResultItem>;
+}
+interface SpeechEventLike {
+  resultIndex: number;
+  results: SpeechResultList;
+}
+interface SpeechRecognitionLike {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((e: SpeechEventLike) => void) | null;
+  onend: (() => void) | null;
+  onerror: ((e: unknown) => void) | null;
+  start(): void;
+  stop(): void;
+}
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionCtor;
+    webkitSpeechRecognition?: SpeechRecognitionCtor;
+  }
+}
+
 const PAGE = {
-  brand: '碧水智言',
-  brandSub: '华中科技大学环境科学与工程学院 · 智能对话',
+  brand: '工程认证',
+  brandSub: '华中科技大学环境科学与工程学院',
   newChat: '新建对话',
   history: '历史会话',
-  welcomeTitle: '碧水之畔，问学喻家',
-  welcomeDesc: '面向环境科学与工程领域的智能问答助手，支持多轮对话与历史记录，由超星智能体驱动。',
-  agentLabel: '环境智能体',
-  placeholder: '输入你的问题，Enter 发送',
+  welcomeTitle: '工程认证 · 智能问答',
+  welcomeDesc:
+    '面向工程教育专业认证的智能问答助手，支持多轮对话、历史记录、文件附件与语音输入，由超星智能体驱动。',
+  agentLabel: '工程认证',
+  placeholder: '输入你的问题，Enter 发送，Shift+Enter 换行',
   deleteLabel: '删除',
   confirmDelete: '确定删除该会话？',
   footer: '内容由 AI 生成，仅供参考',
   loadFail: '历史加载失败',
+  uploadLabel: '上传文件',
+  voiceLabel: '语音输入',
+  voiceUnsupported: '当前浏览器不支持语音输入',
 } as const;
 
 const SUGGESTIONS = [
-  '环境工程专业的主要研究方向有哪些？',
-  '水污染控制工程的核心技术是什么？',
-  '如何开展环境质量评价？',
-  '大气污染物的主要来源与治理思路',
+  '工程教育专业认证的通用标准包含哪几个部分？',
+  '环境工程专业的 12 条毕业要求是什么？',
+  '如何撰写工程教育认证自评报告？',
+  'OBE 成果导向教育的核心理念是什么？',
 ];
 
 /** 从 localStorage 读取智能体会话映射（本地对话 → chaoxing 会话） */
 function loadRobotSessions(): Record<string, RobotSession> {
   try {
-    return JSON.parse(localStorage.getItem('envchat_robot_sessions') ?? '{}') as Record<string, RobotSession>;
+    return (
+      JSON.parse(localStorage.getItem('engcert_robot_sessions') ?? 'null') ??
+      JSON.parse(localStorage.getItem('envchat_robot_sessions') ?? 'null') ??
+      {}
+    ) as Record<string, RobotSession>;
   } catch {
     return {};
   }
 }
 
 function saveRobotSessions(map: Record<string, RobotSession>): void {
-  localStorage.setItem('envchat_robot_sessions', JSON.stringify(map));
+  localStorage.setItem('engcert_robot_sessions', JSON.stringify(map));
 }
 
 let nextTempId = 1;
+
+/** 文件大小可读化 */
+function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 附件类型图标（Unicode 符号，按 MIME 粗分） */
+function attIcon(type: string): string {
+  if (type.startsWith('image/')) return '🖼';
+  if (type.startsWith('audio/') || type.startsWith('video/')) return '🎬';
+  if (type.includes('pdf')) return '📕';
+  if (type.includes('word') || type.includes('document')) return '📘';
+  if (type.includes('sheet') || type.includes('excel')) return '📗';
+  if (type.includes('zip') || type.includes('rar')) return '🗜';
+  return '📄';
+}
+
+/** 附件卡片：一眼可见上传了什么文件（名称 / 类型 / 大小） */
+function AttachmentChip({ att, onRemove }: { att: Attachment; onRemove?: () => void }) {
+  return (
+    <div
+      className="flex max-w-[260px] items-center gap-2.5 rounded-[10px] border border-hairline bg-white px-3 py-2 shadow-sm"
+      title={att.name}
+    >
+      <span
+        aria-hidden="true"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-lake-pale text-[15px]"
+      >
+        {attIcon(att.type)}
+      </span>
+      <div className="min-w-0 flex-1 leading-tight">
+        <p className="truncate text-[13px] font-medium text-ink">{att.name}</p>
+        <p className="mt-0.5 text-[11px] text-ink-faint">{fmtSize(att.size)}</p>
+      </div>
+      {onRemove && (
+        <button
+          type="button"
+          aria-label={`移除 ${att.name}`}
+          onClick={onRemove}
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[12px] text-ink-faint hover:bg-lake-pale hover:text-lake-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
 
 function App() {
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
@@ -77,10 +167,16 @@ function App() {
   const [activeThought, setActiveThought] = useState('');
   const [loadError, setLoadError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** 待发送附件（仅元数据展示） */
+  const [pendingAtts, setPendingAtts] = useState<Attachment[]>([]);
+  /** 语音输入状态 */
+  const [listening, setListening] = useState(false);
 
   const listRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const robotSessionsRef = useRef<Record<string, RobotSession>>({});
+  const recRef = useRef<SpeechRecognitionLike | null>(null);
 
   /** 初始化：加载会话列表 */
   useEffect(() => {
@@ -94,6 +190,13 @@ function App() {
         setLoadError(err instanceof Error ? err.message : PAGE.loadFail);
       }
     })();
+  }, []);
+
+  /** 卸载时释放语音识别 */
+  useEffect(() => {
+    return () => {
+      recRef.current?.stop();
+    };
   }, []);
 
   /** 切换会话：加载消息 */
@@ -113,6 +216,7 @@ function App() {
             role: r.role,
             content: r.content,
             thoughts: Array.isArray(r.thoughts) ? r.thoughts : [],
+            attachments: Array.isArray(r.attachments) ? r.attachments : [],
             streaming: false,
           }))
         );
@@ -129,13 +233,13 @@ function App() {
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, activeThought]);
+  }, [messages, activeThought, pendingAtts]);
 
   const autoGrow = useCallback(() => {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 140) + 'px';
+    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
   }, []);
 
   /** 获取（或申请）某个本地对话对应的智能体会话 */
@@ -158,6 +262,7 @@ function App() {
       const row = await createConversation();
       setConversations((prev) => [row, ...prev]);
       setActiveId(row.id);
+      setMessages([]);
       setSidebarOpen(false);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : '新建会话失败');
@@ -184,7 +289,7 @@ function App() {
 
   /** 发送消息：完整多轮链路（持久化 + SSE 流式） */
   const send = useCallback(
-    async (question: string) => {
+    async (question: string, attachments: Attachment[] = []) => {
       const q = question.trim();
       if (!q || sending) return;
 
@@ -219,11 +324,26 @@ function App() {
         }
       }
 
-      // 2. 保存用户消息（DB）
-      const userMsg: UiMessage = { id: `tmp-u-${nextTempId++}`, role: 'user', content: q, thoughts: [], streaming: false };
-      const agentMsg: UiMessage = { id: `tmp-a-${nextTempId++}`, role: 'assistant', content: '', thoughts: [], streaming: true };
+      // 2. 保存用户消息（DB，含附件元数据）
+      const userMsg: UiMessage = {
+        id: `tmp-u-${nextTempId++}`,
+        role: 'user',
+        content: q,
+        thoughts: [],
+        attachments,
+        streaming: false,
+      };
+      const agentMsg: UiMessage = {
+        id: `tmp-a-${nextTempId++}`,
+        role: 'assistant',
+        content: '',
+        thoughts: [],
+        attachments: [],
+        streaming: true,
+      };
       setMessages((prev) => [...prev, userMsg, agentMsg]);
       setInput('');
+      setPendingAtts([]);
       setSending(true);
       if (taRef.current) taRef.current.style.height = 'auto';
 
@@ -297,7 +417,7 @@ function App() {
 
         // 5. 持久化（用户消息 + 智能体消息）
         try {
-          await insertMessage(convId, 'user', q, []);
+          await insertMessage(convId, 'user', q, [], attachments);
           if (finalText) {
             await insertMessage(convId, 'assistant', finalText, lastThoughts);
           }
@@ -321,14 +441,67 @@ function App() {
     [activeId, sending, messages.length, ensureRobotSession]
   );
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      void send(input);
+  /** 附件选择（仅取元数据用于展示与持久化） */
+  const onPickFiles = (files: FileList | null): void => {
+    if (!files || files.length === 0) return;
+    const mapped: Attachment[] = Array.from(files).map((f) => ({
+      name: f.name,
+      size: f.size,
+      type: f.type || 'application/octet-stream',
+    }));
+    setPendingAtts((prev) => [...prev, ...mapped].slice(0, 6));
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  /** 语音输入开关（Web Speech API，zh-CN） */
+  const toggleVoice = (): void => {
+    if (listening) {
+      recRef.current?.stop();
+      return;
+    }
+    const Ctor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Ctor) {
+      setLoadError(PAGE.voiceUnsupported);
+      return;
+    }
+    const rec = new Ctor();
+    rec.lang = 'zh-CN';
+    rec.continuous = true;
+    rec.interimResults = false;
+    let finalBuf = '';
+    rec.onresult = (e: SpeechEventLike) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const item = e.results[i][0];
+        if (item?.transcript) finalBuf += item.transcript;
+      }
+      setInput(finalBuf);
+    };
+    rec.onend = () => {
+      setListening(false);
+      recRef.current = null;
+    };
+    rec.onerror = () => {
+      setListening(false);
+      recRef.current = null;
+    };
+    recRef.current = rec;
+    setListening(true);
+    try {
+      rec.start();
+    } catch {
+      setListening(false);
+      recRef.current = null;
     }
   };
 
-  const canSend = input.trim().length > 0 && !sending;
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      void send(input, pendingAtts);
+    }
+  };
+
+  const canSend = (input.trim().length > 0 || pendingAtts.length > 0) && !sending;
   const activeTitle = conversations.find((c) => c.id === activeId)?.title ?? PAGE.brand;
 
   return (
@@ -351,16 +524,15 @@ function App() {
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        {/* 品牌区 */}
+        {/* 品牌区：华科校徽 + 工程认证 */}
         <div className="flex items-center gap-3 border-b border-hairline px-4 py-4">
-          <span
-            aria-hidden="true"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-lake-deep font-serif-sc text-[15px] font-bold text-white select-none"
-          >
-            环
-          </span>
+          <img
+            src="/hust-logo.png"
+            alt="华中科技大学校徽"
+            className="h-11 w-11 shrink-0 select-none"
+          />
           <div className="flex flex-col leading-tight">
-            <span className="font-serif-sc text-[15px] font-semibold text-ink">{PAGE.brand}</span>
+            <span className="font-serif-sc text-[16px] font-semibold text-ink">{PAGE.brand}</span>
             <span className="mt-0.5 text-[10px] leading-3 text-ink-faint">HUST · 环境学院</span>
           </div>
         </div>
@@ -370,7 +542,7 @@ function App() {
           <button
             type="button"
             onClick={() => void newChat()}
-            className="flex w-full items-center justify-center gap-2 rounded-[8px] bg-lake-deep px-4 py-2.5 text-[13px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+            className="flex w-full items-center justify-center gap-2 rounded-[10px] bg-lake-deep px-4 py-2.5 text-[14px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
           >
             <span aria-hidden="true">＋</span>
             {PAGE.newChat}
@@ -383,7 +555,7 @@ function App() {
         </div>
         <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
           {conversations.length === 0 && (
-            <p className="px-3 py-4 text-[12px] leading-6 text-ink-faint">暂无历史会话</p>
+            <p className="px-3 py-4 text-[13px] leading-6 text-ink-faint">暂无历史会话</p>
           )}
           {conversations.map((c) => (
             <div
@@ -398,7 +570,7 @@ function App() {
                   setActiveId(c.id);
                   setSidebarOpen(false);
                 }}
-                className="min-w-0 flex-1 truncate px-3 py-2.5 text-left text-[13px] text-ink focus-visible:outline-none"
+                className="min-w-0 flex-1 truncate px-3 py-2.5 text-left text-[13.5px] text-ink focus-visible:outline-none"
                 title={c.title}
               >
                 {c.title}
@@ -416,7 +588,7 @@ function App() {
         </nav>
 
         {/* 底部说明 */}
-        <div className="border-t border-hairline px-4 py-3 text-[10px] leading-4 text-ink-faint">
+        <div className="border-t border-hairline px-4 py-3 text-[10.5px] leading-4 text-ink-faint">
           {PAGE.brandSub}
         </div>
       </aside>
@@ -434,9 +606,9 @@ function App() {
             >
               ☰
             </button>
-            <h1 className="truncate text-[14px] font-medium text-ink">{activeTitle}</h1>
+            <h1 className="truncate text-[15px] font-medium text-ink">{activeTitle}</h1>
           </div>
-          <div className="flex items-center gap-2 text-[12px] text-ink-faint">
+          <div className="flex items-center gap-2 text-[12.5px] text-ink-faint">
             <span aria-hidden="true" className="h-1.5 w-1.5 animate-pulse rounded-full bg-lake-deep" />
             在线
           </div>
@@ -444,7 +616,7 @@ function App() {
 
         {/* 错误提示 */}
         {loadError && (
-          <div className="mx-4 mt-3 rounded-[8px] border border-lake-soft bg-lake-pale px-4 py-2 text-[12px] text-ink-soft sm:mx-6">
+          <div className="mx-4 mt-3 rounded-[8px] border border-lake-soft bg-lake-pale px-4 py-2.5 text-[13px] text-ink-soft sm:mx-6">
             {loadError}
             <button type="button" className="ml-3 text-lake-deep underline" onClick={() => setLoadError('')}>
               忽略
@@ -454,14 +626,14 @@ function App() {
 
         {/* 消息流 */}
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-5 py-8">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-5 py-8">
             {messages.length === 0 && (
               <div className="flex flex-1 flex-col items-start justify-center gap-5 py-14">
-                <p className="text-[12px] tracking-[0.2em] text-lake-deep">HUST · 环境科学与工程学院</p>
-                <h2 className="font-serif-sc text-[2.1rem] leading-[1.35] font-semibold text-ink">
+                <p className="text-[13px] tracking-[0.2em] text-lake-deep">HUST · 环境科学与工程学院</p>
+                <h2 className="font-serif-sc text-[2.2rem] leading-[1.35] font-semibold text-ink">
                   {PAGE.welcomeTitle}
                 </h2>
-                <p className="max-w-md text-[14px] leading-7 text-ink-soft">{PAGE.welcomeDesc}</p>
+                <p className="max-w-lg text-[15px] leading-8 text-ink-soft">{PAGE.welcomeDesc}</p>
                 <div className="mt-2 flex flex-wrap gap-2.5">
                   {SUGGESTIONS.map((s) => (
                     <button
@@ -469,7 +641,7 @@ function App() {
                       type="button"
                       disabled={sending}
                       onClick={() => void send(s)}
-                      className="rounded-full border border-hairline bg-white/70 px-4 py-2 text-[13px] text-ink-soft transition-colors duration-200 hover:border-lake-deep hover:text-lake-deep disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+                      className="rounded-full border border-hairline bg-white/70 px-4 py-2.5 text-[14px] text-ink-soft transition-colors duration-200 hover:border-lake-deep hover:text-lake-deep disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
                     >
                       {s}
                     </button>
@@ -480,16 +652,25 @@ function App() {
 
             {messages.map((m) =>
               m.role === 'user' ? (
-                <div key={m.id} className="flex justify-end">
-                  <div className="max-w-[85%] rounded-[14px] rounded-br-[4px] bg-lake-soft/50 px-4 py-2.5 text-[14px] leading-7 text-ink">
-                    {m.content}
-                  </div>
+                <div key={m.id} className="flex flex-col items-end gap-2">
+                  {m.attachments.length > 0 && (
+                    <div className="flex max-w-[85%] flex-wrap justify-end gap-2">
+                      {m.attachments.map((a, i) => (
+                        <AttachmentChip key={`${a.name}-${i}`} att={a} />
+                      ))}
+                    </div>
+                  )}
+                  {m.content && (
+                    <div className="max-w-[85%] rounded-[14px] rounded-br-[4px] bg-lake-soft/50 px-4 py-3 text-[15px] leading-8 text-ink">
+                      {m.content}
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div key={m.id} className="flex flex-col gap-1.5">
-                  <div className="flex items-baseline gap-2">
-                    <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-lake-deep" />
-                    <span className="text-[12px] font-medium text-ink-soft">{PAGE.agentLabel}</span>
+                <div key={m.id} className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <img src="/hust-logo.png" alt="" className="h-5 w-5 shrink-0 opacity-80" aria-hidden="true" />
+                    <span className="text-[13px] font-medium text-ink-soft">{PAGE.agentLabel}</span>
                   </div>
 
                   <AgentProgress
@@ -500,7 +681,10 @@ function App() {
 
                   {m.content && (
                     <div className="text-ink">
-                      <MarkdownView content={m.content} />
+                      <MarkdownView
+                        content={m.content}
+                        onOptionClick={!m.streaming && !sending ? (text) => void send(text) : undefined}
+                      />
                       {m.streaming && (
                         <span
                           aria-hidden="true"
@@ -511,7 +695,7 @@ function App() {
                   )}
 
                   {!m.content && m.streaming && m.thoughts.length === 0 && !activeThought && (
-                    <div className="flex items-center gap-2 text-[12px] text-ink-faint">
+                    <div className="flex items-center gap-2 text-[13px] text-ink-faint">
                       <span
                         aria-hidden="true"
                         className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-hairline border-t-lake-deep"
@@ -525,10 +709,65 @@ function App() {
           </div>
         </div>
 
-        {/* 输入区 */}
+        {/* 输入区：附件上传 + 语音输入 + 文本框 */}
         <footer className="shrink-0 border-t border-hairline bg-white/70 backdrop-blur-sm">
           <div className="mx-auto w-full max-w-3xl px-5 py-4">
-            <div className="flex items-end gap-3 rounded-[12px] border border-hairline bg-white px-3 py-2.5 focus-within:border-lake-deep">
+            {/* 待发送附件卡片 */}
+            {pendingAtts.length > 0 && (
+              <div className="mb-2.5 flex flex-wrap gap-2">
+                {pendingAtts.map((a, i) => (
+                  <AttachmentChip
+                    key={`${a.name}-${i}`}
+                    att={a}
+                    onRemove={() => setPendingAtts((prev) => prev.filter((_, j) => j !== i))}
+                  />
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-end gap-2 rounded-[14px] border border-hairline bg-white px-3 py-2.5 shadow-sm transition-colors focus-within:border-lake-deep focus-within:shadow-[0_0_0_3px_rgba(58,103,171,0.1)]">
+              {/* 上传文件 */}
+              <input
+                ref={fileRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => onPickFiles(e.target.files)}
+              />
+              <button
+                type="button"
+                aria-label={PAGE.uploadLabel}
+                title={PAGE.uploadLabel}
+                disabled={sending}
+                onClick={() => fileRef.current?.click()}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[17px] text-ink-soft transition-colors hover:bg-lake-pale hover:text-lake-deep disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+              >
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+                </svg>
+              </button>
+
+              {/* 语音输入 */}
+              <button
+                type="button"
+                aria-label={PAGE.voiceLabel}
+                title={PAGE.voiceLabel}
+                disabled={sending}
+                onClick={toggleVoice}
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] transition-colors disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep ${
+                  listening
+                    ? 'animate-[env-breath_2s_ease-in-out_infinite] bg-lake-deep text-white'
+                    : 'text-ink-soft hover:bg-lake-pale hover:text-lake-deep'
+                }`}
+              >
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
+                  <path d="M19 10v2a7 7 0 01-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+              </button>
+
               <textarea
                 ref={taRef}
                 value={input}
@@ -538,20 +777,23 @@ function App() {
                 }}
                 onKeyDown={onKeyDown}
                 rows={1}
-                placeholder={PAGE.placeholder}
+                placeholder={listening ? '正在聆听，请说话…' : PAGE.placeholder}
                 disabled={sending}
-                className="max-h-[140px] min-h-[28px] flex-1 resize-none bg-transparent text-[14px] leading-7 text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
+                className="max-h-[160px] min-h-[36px] flex-1 resize-none bg-transparent px-1 text-[15px] leading-8 text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
               />
+
               <button
                 type="button"
                 disabled={!canSend}
-                onClick={() => void send(input)}
-                className="shrink-0 rounded-lg bg-lake-deep px-4 py-1.5 text-[13px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+                onClick={() => void send(input, pendingAtts)}
+                className="shrink-0 rounded-[10px] bg-lake-deep px-5 py-2 text-[14px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
               >
                 发送
               </button>
             </div>
-            <p className="mt-2 text-center text-[11px] text-ink-faint">{PAGE.footer}</p>
+            <p className="mt-2 text-center text-[11.5px] text-ink-faint">
+              {PAGE.footer} · 支持上传附件（展示名称与大小）与语音输入
+            </p>
           </div>
         </footer>
       </main>

@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { applySession, chatOnce } from '../robot/agent';
+import dbRouter from './db';
 
 const router = Router();
+
+// 数据库代理（会话与消息持久化，浏览器无法直连 Supabase）
+router.use(dbRouter);
 
 /**
  * 申请智能体访客会话。

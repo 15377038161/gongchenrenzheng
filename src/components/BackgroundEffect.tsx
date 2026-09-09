@@ -1,29 +1,29 @@
 /**
- * 背景动效：水环境主题装饰层
- * - 两张 AI 生成的水彩背景（喻家湖水波 / 抽象水纹）低透明度叠加
- * - CSS 缓动：渐变层位移模拟水光流动，装饰圆斑缓浮
- * - prefers-reduced-motion 时静止
+ * 背景动效：华科校园主题装饰层
+ * - 主背景：AI 生成的华科校园水彩（校门 / 教学楼 / 山 / 湖水 / 树叶），透明度适中保证可辨识
+ * - 上层：喻家湖水纹缓慢流动，增加生命感
+ * - 装饰圆斑缓浮；底部水色渐变收边；prefers-reduced-motion 时静止
  */
 export function BackgroundEffect() {
   return (
     <div aria-hidden="true" className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-      {/* 底层：湖面水波（静态铺底） */}
+      {/* 底层：华科校园全景（校门/教学楼/山/湖水/树） */}
       <div
         className="env-bg-layer absolute inset-0"
         style={{
-          backgroundImage: 'url(/bg-lake.png)',
+          backgroundImage: 'url(/bg-campus.png)',
           backgroundSize: 'cover',
           backgroundPosition: 'center',
-          opacity: 0.1,
+          opacity: 0.16,
         }}
       />
-      {/* 上层：抽象水纹（缓慢平移流动） */}
+      {/* 上层：喻家湖水纹（缓慢平移流动） */}
       <div
         className="env-bg-layer env-bg-flow absolute -inset-[10%]"
         style={{
           backgroundImage: 'url(/bg-water.png)',
           backgroundSize: 'cover',
-          opacity: 0.08,
+          opacity: 0.1,
         }}
       />
       {/* 装饰圆斑：气泡与水珠意象，分层缓浮 */}

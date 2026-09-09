@@ -65,6 +65,8 @@ export const messages = pgTable(
     content: text('content').notNull(),
     /** 思考过程步骤（仅 assistant，JSON 数组） */
     thoughts: jsonb('thoughts').default(sql`'[]'::jsonb`),
+    /** 附件元数据（仅 user，JSON 数组：name/size/type） */
+    attachments: jsonb('attachments').default(sql`'[]'::jsonb`),
     created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
