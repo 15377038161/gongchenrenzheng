@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { MarkdownView } from './components/MarkdownView';
 import { AgentProgress } from './components/AgentProgress';
 import { BackgroundEffect } from './components/BackgroundEffect';
+import { FormCard, MenuCard } from './components/RobotCards';
+import type { RobotForm, RobotMenu } from './lib/robot-types';
+import { fmtSize } from './components/fmt';
 import {
   type Attachment,
   type ConversationRow,
@@ -31,6 +34,14 @@ interface UiMessage {
   thoughts: string[];
   attachments: Attachment[];
   streaming: boolean;
+  /** 智能体下发的表单（FORM 事件） */
+  form?: RobotForm;
+  /** 智能体下发的菜单（MENU 事件） */
+  menu?: RobotMenu;
+  /** 表单是否已提交（提交后卡片转为只读） */
+  formSubmitted?: boolean;
+  /** 菜单是否已选择（选择后卡片转为只读） */
+  menuAnswered?: boolean;
 }
 
 /* ===== Web Speech API 类型（Chrome 私有实现的最小声明） ===== */
@@ -141,11 +152,48 @@ function saveRobotSessions(map: Record<string, RobotSession>): void {
 
 let nextTempId = 1;
 
-/** 文件大小可读化 */
-function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+/* ===== FORM / MENU 消息的持久化编解码 =====
+ * content 为 text 列，表单/菜单消息以 JSON 标记字符串存入（历史加载时解析还原）。 */
+
+/** FORM 标记键（序列化格式：{"__robot_form__":{messageId,schema}}） */
+const FORM_TAG = '__robot_form__';
+/** MENU 标记键（序列化格式：{"__robot_menu__":{messageId,question,items}}） */
+const MENU_TAG = '__robot_menu__';
+
+function encodeForm(form: RobotForm): string {
+  return JSON.stringify({ [FORM_TAG]: form });
+}
+
+function encodeMenu(menu: RobotMenu): string {
+  return JSON.stringify({ [MENU_TAG]: menu });
+}
+
+/** 解析历史消息 content：识别 form / menu 标记，返回还原后的附加字段 */
+function decodeRobotMessage(content: string): {
+  content: string;
+  form?: RobotForm;
+  menu?: RobotMenu;
+} {
+  if (!content.startsWith('{"__robot_')) return { content };
+  try {
+    const raw = JSON.parse(content) as Record<string, unknown>;
+    const formRaw = raw[FORM_TAG] as RobotForm | undefined;
+    if (formRaw && typeof formRaw.messageId === 'string' && Array.isArray(formRaw.schema)) {
+      return { content: '', form: formRaw };
+    }
+    const menuRaw = raw[MENU_TAG] as RobotMenu | undefined;
+    if (
+      menuRaw &&
+      typeof menuRaw.messageId === 'string' &&
+      typeof menuRaw.question === 'string' &&
+      Array.isArray(menuRaw.items)
+    ) {
+      return { content: '', menu: menuRaw };
+    }
+  } catch {
+    // 解析失败按普通文本处理
+  }
+  return { content };
 }
 
 /** 附件类型图标（Unicode 符号，按 MIME 粗分） */
@@ -254,14 +302,22 @@ function App() {
         const rows = await listMessages(activeId);
         if (cancelled) return;
         setMessages(
-          rows.map((r: MessageRow) => ({
-            id: r.id,
-            role: r.role,
-            content: r.content,
-            thoughts: Array.isArray(r.thoughts) ? r.thoughts : [],
-            attachments: Array.isArray(r.attachments) ? r.attachments : [],
-            streaming: false,
-          }))
+          rows.map((r: MessageRow) => {
+            // 还原 form / menu 标记消息；表单/菜单卡片在历史中按已处理展示
+            const decoded = decodeRobotMessage(r.content);
+            return {
+              id: r.id,
+              role: r.role,
+              content: decoded.content,
+              thoughts: Array.isArray(r.thoughts) ? r.thoughts : [],
+              attachments: Array.isArray(r.attachments) ? r.attachments : [],
+              streaming: false,
+              form: decoded.form,
+              menu: decoded.menu,
+              formSubmitted: decoded.form ? true : undefined,
+              menuAnswered: decoded.menu ? true : undefined,
+            };
+          })
         );
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : PAGE.loadFail);
@@ -464,12 +520,16 @@ function App() {
         let buffer = '';
         let finalText = '';
         let lastThoughts: string[] = [];
+        /** 收到的 FORM / MENU 下行（表单/菜单消息以标记格式入库） */
+        let receivedForm: RobotForm | null = null;
+        let receivedMenu: RobotMenu | null = null;
 
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           let sep: number;
+          let streamEnded = false;
           while ((sep = buffer.indexOf('\n\n')) >= 0) {
             const frame = buffer.slice(0, sep);
             buffer = buffer.slice(sep + 2);
@@ -501,18 +561,40 @@ function App() {
                 finalText = text;
                 patch((m) => ({ ...m, content: text }));
               }
+            } else if (eventName === 'form') {
+              // 表单下发：填充卡片并结束本轮流（提交走独立 form 接口）
+              const form = JSON.parse(dataRaw) as RobotForm;
+              if (form && typeof form.messageId === 'string' && Array.isArray(form.schema)) {
+                receivedForm = form;
+                patch((m) => ({ ...m, form, streaming: false }));
+              }
+              streamEnded = true;
+            } else if (eventName === 'menu') {
+              // 菜单下发：填充选项卡片并结束本轮流（选择以普通文本重新发送）
+              const menu = JSON.parse(dataRaw) as RobotMenu;
+              if (menu && typeof menu.messageId === 'string' && Array.isArray(menu.items)) {
+                receivedMenu = menu;
+                patch((m) => ({ ...m, menu, streaming: false }));
+              }
+              streamEnded = true;
             } else if (eventName === 'error') {
               const { message } = JSON.parse(dataRaw) as { message?: string };
               finalText = finalText || message || '回复失败，请重试';
               patch((m) => ({ ...m, content: finalText, streaming: false }));
             }
+            if (streamEnded) break;
           }
+          if (streamEnded) break;
         }
         patch((m) => ({ ...m, streaming: false }));
 
         // 5. 持久化智能体回复（用户消息已在请求前入库）
         try {
-          if (finalText) {
+          if (receivedForm) {
+            await insertMessage(convId, 'assistant', encodeForm(receivedForm), lastThoughts);
+          } else if (receivedMenu) {
+            await insertMessage(convId, 'assistant', encodeMenu(receivedMenu), lastThoughts);
+          } else if (finalText) {
             await insertMessage(convId, 'assistant', finalText, lastThoughts);
           }
           await touchConversation(convId);
@@ -541,6 +623,202 @@ function App() {
       }
     },
     [activeId, sending, messages.length, ensureRobotSession]
+  );
+
+  /** 表单文件字段上传：先确保会话，再走 /api/chat/upload 拿 objectId */
+  const uploadFormFile = useCallback(
+    async (
+      convId: string,
+      file: File
+    ): Promise<{ name: string; size: number; objectId: string } | null> => {
+      try {
+        const robot = await ensureRobotSession(convId);
+        const fd = new FormData();
+        fd.append('visitorId', robot.visitorId);
+        fd.append('visitorVc', robot.visitorVc);
+        fd.append('conversationId', robot.conversationId);
+        fd.append('file', file);
+        const res = await fetch('/api/chat/upload', { method: 'POST', body: fd });
+        const data = (await res.json()) as {
+          success?: boolean;
+          file?: { objectId?: string };
+          error?: string;
+        };
+        if (data.success && data.file?.objectId) {
+          return { name: file.name, size: file.size, objectId: data.file.objectId };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+    [ensureRobotSession]
+  );
+
+  /**
+   * 提交智能体表单（SUBMIT_FORM 协议）：
+   * 标记卡片已提交 → 以用户视角追加一条提交回执消息 → 调 /api/chat/form
+   * 流式接收回复（事件与 stream 一致，含 form/menu/文本）。
+   */
+  const sendFormSubmit = useCallback(
+    async (agentMsgId: string, formMessageId: string, fields: Array<Record<string, unknown>>) => {
+      const convId = activeId;
+      if (!convId || sending) return;
+
+      // 1. 表单卡片转只读
+      setMessages((prev) =>
+        prev.map((m) => (m.id === agentMsgId ? { ...m, formSubmitted: true } : m))
+      );
+
+      // 2. 用户回执消息 + 新的流式回复消息
+      const receipt: UiMessage = {
+        id: `tmp-u-${nextTempId++}`,
+        role: 'user',
+        content: '已提交表单',
+        thoughts: [],
+        attachments: [],
+        streaming: false,
+      };
+      const agentMsg: UiMessage = {
+        id: `tmp-a-${nextTempId++}`,
+        role: 'assistant',
+        content: '',
+        thoughts: [],
+        attachments: [],
+        streaming: true,
+      };
+      setMessages((prev) => [...prev, receipt, agentMsg]);
+      setSending(true);
+
+      const patch = (fn: (m: UiMessage) => UiMessage) => {
+        setMessages((prev) => prev.map((m) => (m.id === agentMsg.id ? fn(m) : m)));
+      };
+
+      // 3. 回执先入库（即使后续失败也已可见）
+      try {
+        await insertMessage(convId, 'user', '已提交表单', [], []);
+        await touchConversation(convId);
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : '消息保存失败');
+      }
+
+      try {
+        const robot = await ensureRobotSession(convId);
+        const res = await fetch('/api/chat/form', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            visitorId: robot.visitorId,
+            visitorVc: robot.visitorVc,
+            conversationId: robot.conversationId,
+            messageId: formMessageId,
+            fields,
+          }),
+        });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalText = '';
+        let lastThoughts: string[] = [];
+        let receivedForm: RobotForm | null = null;
+        let receivedMenu: RobotMenu | null = null;
+
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sep: number;
+          let streamEnded = false;
+          while ((sep = buffer.indexOf('\n\n')) >= 0) {
+            const frame = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            let eventName = '';
+            let dataRaw = '';
+            for (const line of frame.split('\n')) {
+              if (line.startsWith('event: ')) eventName = line.slice(7).trim();
+              else if (line.startsWith('data: ')) dataRaw = line.slice(6);
+            }
+            if (!dataRaw) continue;
+
+            if (eventName === 'thought') {
+              const { description } = JSON.parse(dataRaw) as { description?: string };
+              if (description) {
+                setActiveThought(description);
+                patch((m) => ({ ...m, thoughts: [...m.thoughts, description] }));
+                lastThoughts = [...lastThoughts, description];
+              }
+            } else if (eventName === 'delta') {
+              const { text } = JSON.parse(dataRaw) as { text?: string };
+              if (text) {
+                setActiveThought('');
+                finalText += text;
+                patch((m) => ({ ...m, content: m.content + text }));
+              }
+            } else if (eventName === 'final') {
+              const { text } = JSON.parse(dataRaw) as { text?: string };
+              if (text && text.length >= finalText.length) {
+                finalText = text;
+                patch((m) => ({ ...m, content: text }));
+              }
+            } else if (eventName === 'form') {
+              const form = JSON.parse(dataRaw) as RobotForm;
+              if (form && typeof form.messageId === 'string' && Array.isArray(form.schema)) {
+                receivedForm = form;
+                patch((m) => ({ ...m, form, streaming: false }));
+              }
+              streamEnded = true;
+            } else if (eventName === 'menu') {
+              const menu = JSON.parse(dataRaw) as RobotMenu;
+              if (menu && typeof menu.messageId === 'string' && Array.isArray(menu.items)) {
+                receivedMenu = menu;
+                patch((m) => ({ ...m, menu, streaming: false }));
+              }
+              streamEnded = true;
+            } else if (eventName === 'error') {
+              const { message } = JSON.parse(dataRaw) as { message?: string };
+              finalText = finalText || message || '回复失败，请重试';
+              patch((m) => ({ ...m, content: finalText, streaming: false }));
+            }
+            if (streamEnded) break;
+          }
+          if (streamEnded) break;
+        }
+        patch((m) => ({ ...m, streaming: false }));
+
+        try {
+          if (receivedForm) {
+            await insertMessage(convId, 'assistant', encodeForm(receivedForm), lastThoughts);
+          } else if (receivedMenu) {
+            await insertMessage(convId, 'assistant', encodeMenu(receivedMenu), lastThoughts);
+          } else if (finalText) {
+            await insertMessage(convId, 'assistant', finalText, lastThoughts);
+          }
+          await touchConversation(convId);
+        } catch (err) {
+          setLoadError(err instanceof Error ? err.message : '消息保存失败');
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '表单提交失败，请重试';
+        patch((m) => ({ ...m, content: m.content || msg, streaming: false }));
+        // 提交失败时恢复卡片可编辑状态（FormCard catch 后会复位 busy）
+        setMessages((prev) =>
+          prev.map((m) => (m.id === agentMsgId ? { ...m, formSubmitted: false } : m))
+        );
+        if (robotSessionsRef.current[convId]) {
+          const rest = { ...robotSessionsRef.current };
+          delete rest[convId];
+          delete sessionTimestamps[convId];
+          robotSessionsRef.current = rest;
+          saveRobotSessions(rest);
+        }
+      } finally {
+        setActiveThought('');
+        setSending(false);
+      }
+    },
+    [activeId, sending, ensureRobotSession]
   );
 
   /** 附件选择：立即上传到智能体拿 objectId（发送时随消息带 fileInfo） */
@@ -868,7 +1146,38 @@ function App() {
                     </div>
                   )}
 
-                  {!m.content && m.streaming && m.thoughts.length === 0 && !activeThought && (
+                  {/* 智能体表单卡片：填写并提交（SUBMIT_FORM），文件字段先行上传 */}
+                  {m.form && !m.streaming && activeId && (
+                    <div className="max-w-[92%] sm:max-w-[520px]">
+                      <FormCard
+                        form={m.form}
+                        submitted={Boolean(m.formSubmitted)}
+                        uploading={false}
+                        onUploadFile={async (_field, file) => uploadFormFile(activeId, file)}
+                        onSubmit={async (fields) => {
+                          await sendFormSubmit(m.id, m.form?.messageId ?? '', fields);
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* 智能体菜单卡片：点击选项即以普通文本重新发起对话 */}
+                  {m.menu && !m.streaming && (
+                    <div className="max-w-[92%] sm:max-w-[520px]">
+                      <MenuCard
+                        menu={m.menu}
+                        answered={Boolean(m.menuAnswered) || sending}
+                        onPick={(text) => {
+                          setMessages((prev) =>
+                            prev.map((x) => (x.id === m.id ? { ...x, menuAnswered: true } : x))
+                          );
+                          void send(text);
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {!m.content && !m.form && !m.menu && m.streaming && m.thoughts.length === 0 && !activeThought && (
                     <div className="flex items-center gap-2 text-[13px] text-ink-faint">
                       <span
                         aria-hidden="true"

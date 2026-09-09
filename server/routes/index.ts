@@ -1,6 +1,13 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { applySession, chatOnce, uploadFile, type RobotFileInfo } from '../robot/agent';
+import {
+  applySession,
+  chatOnce,
+  submitForm,
+  uploadFile,
+  type RobotFileInfo,
+  type RobotFormFieldValue,
+} from '../robot/agent';
 import dbRouter from './db';
 
 const router = Router();
@@ -120,6 +127,14 @@ router.get('/api/chat/stream', (req, res) => {
           writeEvent('final', { text: accumulated });
           res.end();
           break;
+        case 'form':
+          writeEvent('form', ev.form);
+          res.end();
+          break;
+        case 'menu':
+          writeEvent('menu', ev.menu);
+          res.end();
+          break;
         case 'error':
           writeEvent('error', { message: ev.message });
           res.end();
@@ -130,6 +145,116 @@ router.get('/api/chat/stream', (req, res) => {
   );
 
   // 客户端断开时释放上游连接
+  req.on('close', () => {
+    handle.close();
+  });
+});
+
+/**
+ * 提交智能体下发的表单（SSE 流式下行，事件与 stream 接口一致）。
+ * 请求体：{ visitorId, visitorVc, conversationId, messageId, fields }
+ * fields：表单字段值数组，文件字段 value 为 objectId 数组（先经 upload 接口上传）。
+ */
+router.post('/api/chat/form', (req, res) => {
+  const body = (req.body ?? {}) as {
+    visitorId?: unknown;
+    visitorVc?: unknown;
+    conversationId?: unknown;
+    messageId?: unknown;
+    fields?: unknown;
+  };
+  const visitorId = String(body.visitorId ?? '');
+  const visitorVc = String(body.visitorVc ?? '');
+  const conversationId = String(body.conversationId ?? '');
+  const messageId = String(body.messageId ?? '');
+  const fields = Array.isArray(body.fields) ? body.fields : [];
+
+  if (!visitorId || !visitorVc || !conversationId) {
+    res.status(400).json({ error: '会话参数缺失，请先调用 /api/chat/session' });
+    return;
+  }
+  if (!messageId || fields.length === 0) {
+    res.status(400).json({ error: '缺少表单 messageId 或字段值' });
+    return;
+  }
+
+  // 字段值校验：name 必须为非空字符串，value 为 string 或 string[]，其余键透传
+  const safeFields: RobotFormFieldValue[] = [];
+  for (const item of fields) {
+    if (item === null || typeof item !== 'object') continue;
+    const f = item as Record<string, unknown>;
+    const name = typeof f.name === 'string' ? f.name : '';
+    if (!name) continue;
+    let value: string | string[] = '';
+    if (typeof f.value === 'string') {
+      value = f.value;
+    } else if (Array.isArray(f.value) && f.value.every((x) => typeof x === 'string')) {
+      value = f.value as string[];
+    } else {
+      value = '';
+    }
+    const field: RobotFormFieldValue = { ...f, name, value };
+    if (Array.isArray(f.valueDetail)) {
+      field.valueDetail = (f.valueDetail as unknown[])
+        .filter(
+          (x): x is { name: string; size: number } =>
+            x !== null && typeof x === 'object' &&
+            typeof (x as { name?: unknown }).name === 'string' &&
+            typeof (x as { size?: unknown }).size === 'number'
+        )
+        .map((x) => ({ name: x.name, size: x.size }));
+    }
+    safeFields.push(field);
+  }
+  if (safeFields.length === 0) {
+    res.status(400).json({ error: '表单字段值不合法' });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  const writeEvent = (event: string, payload: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  let accumulated = '';
+  const handle = submitForm(
+    { visitorId, visitorVc, conversationId },
+    messageId,
+    safeFields,
+    (ev) => {
+      switch (ev.type) {
+        case 'thought':
+          writeEvent('thought', { description: ev.description });
+          break;
+        case 'delta':
+          accumulated += ev.text;
+          writeEvent('delta', { text: ev.text });
+          break;
+        case 'final':
+          writeEvent('final', { text: accumulated });
+          res.end();
+          break;
+        case 'form':
+          writeEvent('form', ev.form);
+          res.end();
+          break;
+        case 'menu':
+          writeEvent('menu', ev.menu);
+          res.end();
+          break;
+        case 'error':
+          writeEvent('error', { message: ev.message });
+          res.end();
+          break;
+      }
+    }
+  );
+
   req.on('close', () => {
     handle.close();
   });
