@@ -9,6 +9,7 @@ interface Attachment {
   name: string;
   size: number;
   type: string;
+  objectId?: string;
 }
 
 interface MessagePayload {
@@ -39,13 +40,20 @@ function strArray(v: unknown): string[] | null {
 
 function attArray(v: unknown): Attachment[] | null {
   if (!Array.isArray(v)) return null;
-  return v.filter(
-    (x) =>
-      x !== null && typeof x === 'object' &&
-      typeof (x as Attachment).name === 'string' &&
-      typeof (x as Attachment).size === 'number' &&
-      typeof (x as Attachment).type === 'string'
-  ) as Attachment[];
+  return v
+    .filter(
+      (x): x is Attachment =>
+        x !== null && typeof x === 'object' &&
+        typeof (x as Attachment).name === 'string' &&
+        typeof (x as Attachment).size === 'number' &&
+        typeof (x as Attachment).type === 'string'
+    )
+    .map((x) => ({
+      name: x.name,
+      size: x.size,
+      type: x.type,
+      objectId: typeof x.objectId === 'string' ? x.objectId : undefined,
+    }));
 }
 
 /** 校验 client_key 并取客户端实例 */

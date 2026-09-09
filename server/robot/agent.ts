@@ -58,6 +58,14 @@ interface OutgoingMessage {
   d: string;
 }
 
+/** 上传到智能体的文件信息（WS msg.fileInfo 单元素） */
+export interface RobotFileInfo {
+  objectId: string;
+  filename: string;
+  type: string;
+  fileSize: number;
+}
+
 /** 申请匿名访客会话 */
 export async function applySession(): Promise<RobotSession> {
   const url =
@@ -86,13 +94,52 @@ export async function applySession(): Promise<RobotSession> {
 }
 
 /**
+ * 上传文件到智能体会话（multipart，uploadType=CHAT_FILE 实测可用）。
+ * 返回 fileId 信息，发送消息时填入 WS msg.fileInfo 即可让智能体读取文档内容。
+ */
+export async function uploadFile(
+  session: RobotSession,
+  file: { name: string; type: string; buffer: Buffer }
+): Promise<RobotFileInfo> {
+  const url =
+    `${ROBOT_ORIGIN}/v1/front/chat/upload/multipart?conversationId=${session.conversationId}` +
+    `&uploadType=CHAT_FILE&unitId=${UNIT_ID}`;
+  const fd = new FormData();
+  fd.append('file', new Blob([new Uint8Array(file.buffer)], { type: file.type || 'application/octet-stream' }), file.name);
+  const res = await fetch(url, {
+    method: 'POST',
+    body: fd,
+    headers: { Referer: `${ROBOT_ORIGIN}/coze`, Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    throw new Error(`上传失败：HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as {
+    status?: boolean;
+    datas?: Array<{ filename?: string; type?: string; objectId?: string }>;
+  };
+  const obj = data.datas?.[0];
+  if (!data.status || !obj?.objectId) {
+    throw new Error(data.status === false ? '上传失败：智能体拒绝了该文件' : '上传失败：返回数据不完整');
+  }
+  return {
+    objectId: obj.objectId,
+    filename: obj.filename ?? file.name,
+    type: obj.type ?? file.type,
+    fileSize: file.buffer.length,
+  };
+}
+
+/**
  * 与智能体建立一次对话：连接 WS、发送问题、把下行消息转换为事件流。
  * onEvent 收到 'final' 或 'error' 后结束。
+ * @param fileInfo 上传文件列表（来自 uploadFile），智能体将读取文档内容
  */
 export function chatOnce(
   session: RobotSession,
   question: string,
-  onEvent: (event: RobotEvent) => void
+  onEvent: (event: RobotEvent) => void,
+  fileInfo: RobotFileInfo[] = []
 ): { close: () => void } {
   const wsUrl =
     `${ROBOT_ORIGIN.replace('https', 'wss')}/v1/ws/chat/${UNIT_ID}/visitor` +
@@ -137,7 +184,7 @@ export function chatOnce(
         question,
         visibleQuestion: question,
         questionType: 'TEXT',
-        fileInfo: [],
+        fileInfo,
       },
       ackStatus: 'SENDING',
       robot: { type: '', scene: -1, extend: '', subject: '', spage: 1 },

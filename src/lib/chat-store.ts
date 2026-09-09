@@ -5,6 +5,8 @@ export interface Attachment {
   name: string;
   size: number;
   type: string;
+  /** 上传到智能体后的文件标识（无则未上传成功） */
+  objectId?: string;
 }
 
 export interface ConversationRow {

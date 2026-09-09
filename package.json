@@ -20,12 +20,14 @@
     "drizzle-orm": "^0.45.2",
     "express": "^4.21.2",
     "marked": "^18.0.12",
+    "multer": "^2.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/marked": "^6.0.0",
+    "@types/multer": "^2.2.0",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

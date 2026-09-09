@@ -1,11 +1,15 @@
 import { Router } from 'express';
-import { applySession, chatOnce } from '../robot/agent';
+import multer from 'multer';
+import { applySession, chatOnce, uploadFile, type RobotFileInfo } from '../robot/agent';
 import dbRouter from './db';
 
 const router = Router();
 
 // 数据库代理（会话与消息持久化，浏览器无法直连 Supabase）
 router.use(dbRouter);
+
+// 文件上传（内存缓冲，转发给超星智能体）
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 /**
  * 申请智能体访客会话。
@@ -17,6 +21,34 @@ router.post('/api/chat/session', async (_req, res) => {
     res.json({ success: true, session });
   } catch (err) {
     const message = err instanceof Error ? err.message : '申请会话失败';
+    res.status(502).json({ success: false, error: message });
+  }
+});
+
+/**
+ * 上传文件到智能体会话（multipart 转发至超星）。
+ * 表单字段：visitorId / visitorVc / conversationId（来自 session 接口）+ file
+ * 返回 { objectId, filename, type, fileSize }，发送消息时随请求带给 stream 接口。
+ */
+router.post('/api/chat/upload', upload.single('file'), async (req, res) => {
+  const { visitorId = '', visitorVc = '', conversationId = '' } = req.body as Record<string, string>;
+  const file = req.file;
+  if (!visitorId || !visitorVc || !conversationId) {
+    res.status(400).json({ success: false, error: '会话参数缺失，请先申请会话' });
+    return;
+  }
+  if (!file) {
+    res.status(400).json({ success: false, error: '缺少文件' });
+    return;
+  }
+  try {
+    const info = await uploadFile(
+      { visitorId, visitorVc, conversationId },
+      { name: file.originalname, type: file.mimetype, buffer: file.buffer }
+    );
+    res.json({ success: true, file: info });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '上传失败';
     res.status(502).json({ success: false, error: message });
   }
 });
@@ -39,6 +71,25 @@ router.get('/api/chat/stream', (req, res) => {
   if (!visitorId || !visitorVc || !conversationId) {
     res.status(400).json({ error: '会话参数缺失，请先调用 /api/chat/session' });
     return;
+  }
+
+  // 随消息携带的已上传文件（JSON：[{objectId,filename,type,fileSize}]）
+  let fileInfo: RobotFileInfo[] = [];
+  const rawFiles = String(req.query.files ?? '[]');
+  if (rawFiles !== '[]') {
+    try {
+      const parsed = JSON.parse(rawFiles) as unknown[];
+      fileInfo = parsed
+        .filter(
+          (x): x is RobotFileInfo =>
+            x !== null && typeof x === 'object' &&
+            typeof (x as RobotFileInfo).objectId === 'string' &&
+            typeof (x as RobotFileInfo).filename === 'string'
+        )
+        .slice(0, 6);
+    } catch {
+      // 非法 JSON 时按无文件处理
+    }
   }
 
   // SSE 响应头
@@ -74,7 +125,8 @@ router.get('/api/chat/stream', (req, res) => {
           res.end();
           break;
       }
-    }
+    },
+    fileInfo
   );
 
   // 客户端断开时释放上游连接

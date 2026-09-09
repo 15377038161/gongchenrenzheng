@@ -69,25 +69,26 @@ const PAGE = {
   brandSub: '华中科技大学环境科学与工程学院',
   newChat: '新建对话',
   history: '历史会话',
-  welcomeTitle: '工程认证 · 智能问答',
+  welcomeTitle: '工程认证材料 · 智能读取',
   welcomeDesc:
-    '面向工程教育专业认证的智能问答助手，支持多轮对话、历史记录、文件附件与语音输入，由超星智能体驱动。',
+    '上传工程认证材料文档，智能体自动提取文档内容，可按章节（如 1.1、1.2、2.1）读取并细分选择章节内容。',
   agentLabel: '工程认证',
-  placeholder: '输入你的问题，Enter 发送，Shift+Enter 换行',
+  placeholder: '输入问题或章节号（如 1.1），Enter 发送，Shift+Enter 换行',
   deleteLabel: '删除',
   confirmDelete: '确定删除该会话？',
   footer: '内容由 AI 生成，仅供参考',
   loadFail: '历史加载失败',
   uploadLabel: '上传文件',
+  uploadHint: '上传工程认证材料（doc/pdf/txt），智能体将提取文档内容',
   voiceLabel: '语音输入',
   voiceUnsupported: '当前浏览器不支持语音输入',
 } as const;
 
 const SUGGESTIONS = [
-  '工程教育专业认证的通用标准包含哪几个部分？',
-  '环境工程专业的 12 条毕业要求是什么？',
-  '如何撰写工程教育认证自评报告？',
-  'OBE 成果导向教育的核心理念是什么？',
+  '列出文档的全部章节目录',
+  '读取 1.1 培养目标的内容',
+  '读取 2.1 工程知识毕业要求',
+  '读取第 3 章 课程体系的内容',
 ];
 
 /** 从 localStorage 读取智能体会话映射（本地对话 → chaoxing 会话） */
@@ -274,7 +275,8 @@ function App() {
     if (!window.confirm(PAGE.confirmDelete)) return;
     try {
       await deleteConversation(id);
-      const { [id]: _removed, ...rest } = robotSessionsRef.current;
+      const rest = { ...robotSessionsRef.current };
+      delete rest[id];
       robotSessionsRef.current = rest;
       saveRobotSessions(rest);
       setConversations((prev) => {
@@ -355,12 +357,21 @@ function App() {
         // 3. 获取智能体会话（同一会话复用同一 chaoxing conversation，天然保持多轮上下文）
         const robot = await ensureRobotSession(convId);
 
-        // 4. SSE 流式请求
+        // 4. SSE 流式请求（已上传成功的附件以 fileInfo 形式随消息携带）
+        const sentFiles = attachments
+          .filter((a): a is Attachment & { objectId: string } => Boolean(a.objectId))
+          .map((a) => ({
+            objectId: a.objectId,
+            filename: a.name,
+            type: a.type,
+            fileSize: a.size,
+          }));
         const url =
           `/api/chat/stream?q=${encodeURIComponent(q)}` +
           `&visitorId=${encodeURIComponent(robot.visitorId)}` +
           `&visitorVc=${encodeURIComponent(robot.visitorVc)}` +
-          `&conversationId=${encodeURIComponent(robot.conversationId)}`;
+          `&conversationId=${encodeURIComponent(robot.conversationId)}` +
+          (sentFiles.length > 0 ? `&files=${encodeURIComponent(JSON.stringify(sentFiles))}` : '');
         const res = await fetch(url);
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
@@ -441,16 +452,55 @@ function App() {
     [activeId, sending, messages.length, ensureRobotSession]
   );
 
-  /** 附件选择（仅取元数据用于展示与持久化） */
+  /** 附件选择：立即上传到智能体拿 objectId（发送时随消息带 fileInfo） */
   const onPickFiles = (files: FileList | null): void => {
     if (!files || files.length === 0) return;
-    const mapped: Attachment[] = Array.from(files).map((f) => ({
-      name: f.name,
-      size: f.size,
-      type: f.type || 'application/octet-stream',
-    }));
-    setPendingAtts((prev) => [...prev, ...mapped].slice(0, 6));
+    const picked: Attachment[] = Array.from(files)
+      .slice(0, 6 - pendingAtts.length)
+      .map((f) => ({ name: f.name, size: f.size, type: f.type || 'application/octet-stream' }));
+    if (picked.length === 0) return;
+    setPendingAtts((prev) => [...prev, ...picked].slice(0, 6));
     if (fileRef.current) fileRef.current.value = '';
+
+    // 逐个真实上传（需绑定到当前会话；无会话时先建会话，确保文件与消息同会话）
+    (async () => {
+      try {
+        let convId = activeId;
+        if (!convId) {
+          const row = await createConversation('材料读取');
+          convId = row.id;
+          setConversations((prev) => [row, ...prev]);
+          setActiveId(row.id);
+        }
+        const robot = await ensureRobotSession(convId);
+        for (const att of picked) {
+          const file = Array.from(files).find((f) => f.name === att.name);
+          if (!file) continue;
+          const fd = new FormData();
+          fd.append('visitorId', robot.visitorId);
+          fd.append('visitorVc', robot.visitorVc);
+          fd.append('conversationId', robot.conversationId);
+          fd.append('file', file);
+          const res = await fetch('/api/chat/upload', { method: 'POST', body: fd });
+          const data = (await res.json()) as {
+            success?: boolean;
+            file?: { objectId?: string };
+            error?: string;
+          };
+          if (data.success && data.file?.objectId) {
+            setPendingAtts((prev) =>
+              prev.map((p) => (p.name === att.name && !p.objectId ? { ...p, objectId: data.file!.objectId } : p))
+            );
+          } else {
+            throw new Error(data.error ?? `${att.name} 上传失败`);
+          }
+        }
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : '文件上传失败');
+        // 上传失败的附件直接移除，避免发送无效文件
+        setPendingAtts((prev) => prev.filter((p) => p.objectId));
+      }
+    })();
   };
 
   /** 语音输入开关（Web Speech API，zh-CN） */

@@ -1,68 +1,31 @@
-# 项目上下文
+# AGENTS.md
 
-## 项目简介
+## 项目概览
+- 工程认证智能问答应用（华中科技大学环境科学与工程学院）：上传工程认证材料文档，智能体自动提炼内容，按章节（1.1/1.2/2.1）读取章节内容
+- 架构：Express（`server/`）+ React SPA（`src/`），Vite 构建，前后端同一 dev server（HMR + `/api` 代理）
+- 智能体链路：服务端对接超星智能体（SSE 流式：thought/delta/final/error 四类事件）；文件上传走 `CHAT_FILE` 端点拿 objectId，随消息以 `fileInfo` 携带触发文档提炼
 
-智识对话：超星智能体的**自研交互界面**（已弃用 iframe 嵌入方案）。后端 Express 代理超星智能体真实对话链路（匿名访客会话 + WebSocket 对话协议），前端以 SSE 流式接收、打字机式渲染，完整调用智能体能力而完全不展示其原生页面。视觉规范见 DESIGN.md。
+## 常用命令
+- 依赖：`pnpm install`（仅 pnpm）
+- 静态检查：`pnpm ts-check` / `pnpm lint`
+- 冒烟测试端口：`$DEPLOY_RUN_PORT`（禁止硬编码，禁止 9000 端口）
 
-## 智能体代理协议（关键）
+## 代码结构
+- `server/robot/agent.ts`：超星智能体协议（applySession / chatOnce / uploadFile）；`RobotFileInfo = { objectId, filename, type, fileSize }`
+- `server/routes/index.ts`：`/api/chat/session`、`/api/chat/upload`（multipart）、`/api/chat/stream`（SSE，query 传 `files` JSON）、`/api/health`
+- `server/routes/db.ts`：`/api/db/conversations`、`/api/db/messages` CRUD；插入必须携带 `client_key`（RLS 隔离），请求经 `x-client-key` header 传入
+- `server/db/supabase.ts`：服务端 Supabase 客户端工厂（浏览器不能直连内网 Supabase，一律走服务端代理）
+- `src/renderer.tsx`：主界面（会话/消息/上传/语音/进度条全在此，单文件较大，改动前先 grep 定位）
+- `src/lib/chat-store.ts`：前端数据层；`Attachment` 含可选 `objectId`
+- `src/index.css`：湖蓝/薄荷主题 tokens、选项卡片、呼吸动效
+- `public/hust-logo.png`、`public/bg-campus.png`：华科校徽与校园水彩背景
 
-- 会话申请：`GET https://robot.chaoxing.com/v1/front/chat/visitor/apply?unitId=1731&robotId=9a31c8e736704a0b9d57b35c73da681f&channel=WEB...`（匿名可用，返回 visitorId/visitorVc/conversationId）
-- 对话通道：`WSS /v1/ws/chat/{unitId}/visitor?userId=&channel=WEB&conversationId=&robotId=&visitorVc=`
-- 发送格式：`{ communicateType: 'DATA', messageType: 'TEXT', direction: 'IN', msg: { channel: 'WEB', question, questionType: 'TEXT', fileInfo: [] }, ... }`（注意：`VISITOR_IN` 是转人工消息，勿误用）
-- 下行解析：`type: SEMANTIC/LLM` 为思考事件（meta.description）；`answer` 内嵌 JSON 的 `responseText` 为答案正文分片；`flag: "stop"` 或 `sseStop: true` 为流结束；`systemMsg: true` 且无 responseText 的是意图分类回显，需过滤
-- 本项目接口：`POST /api/chat/session`（申请会话）、`GET /api/chat/stream?q=&visitorId=&visitorVc=&conversationId=`（SSE：thought/delta/final/error 事件）
-- 路由挂载顺序：API 路由必须在 Vite 中间件之前（server.ts 已修复，勿回退）
+## 编码规范
+- TypeScript strict：所有参数/返回值显式标注类型，禁止隐式 any
+- React 19：不 `import React`（除非用 `React.xxx`）；禁止 JSX 内直接用 `Date.now()`/`Math.random()`
+- 前端与智能体会话映射存 localStorage（`engcert_robot_sessions`），删除会话时需同步清理
 
-## 技术栈
-
-- **核心**: Vite 7, React 19, TypeScript, Express
-- **SDK**: iframe-route-sync (CDN), iframe-error-sync (CDN), iframe-element-picker (CDN)
-- **UI**: Tailwind CSS
-- **JSX**: Vite 7 内置 esbuild 处理（无需 @vitejs/plugin-react）
-
-## 目录结构
-
-```
-├── scripts/            # 构建与启动脚本
-│   ├── build.sh        # 构建脚本
-│   ├── dev.sh          # 开发环境启动脚本
-│   ├── prepare.sh      # 预处理脚本
-│   └── start.sh        # 生产环境启动脚本
-├── server/             # 服务端逻辑
-│   ├── routes/         # API 路由
-│   ├── server.ts       # Express 服务入口
-│   └── vite.ts         # Vite 中间件集成
-├── src/                # 前端源码
-│   ├── sdk/            # SDK 绑定逻辑
-│   │   ├── bind-error-sync.ts    # iframe-error-sync Vite HMR 钩子
-│   │   └── bind-route-sync.ts    # iframe-route-sync 路由同步
-│   ├── iframe-error-sync.d.ts    # error-sync 全局类型声明
-│   ├── iframe-element-picker.d.ts # element-picker 全局类型声明
-│   ├── iframe-route-sync.d.ts    # route-sync 全局类型声明
-│   ├── index.css       # 全局样式
-│   ├── index.tsx       # 客户端入口
-│   ├── main.tsx        # SDK 初始化入口
-│   └── renderer.tsx    # React 组件 + renderHome
-├── index.html          # 入口 HTML
-├── package.json        # 项目依赖管理
-├── tsconfig.json       # TypeScript 配置
-└── vite.config.ts      # Vite 配置
-```
-
-## 包管理规范
-
-**仅允许使用 pnpm** 作为包管理器，**严禁使用 npm 或 yarn**。
-**常用命令**：
-- 安装依赖：`pnpm add <package>`
-- 安装开发依赖：`pnpm add -D <package>`
-- 安装所有依赖：`pnpm install`
-- 移除依赖：`pnpm remove <package>`
-
-## 开发规范
-
-- 使用 Tailwind CSS 进行样式开发
-
-### 编码规范
-
-- 默认按 TypeScript `strict` 心智写代码；优先复用当前作用域已声明的变量、函数、类型和导入，禁止引用未声明标识符或拼错变量名。
-- 禁止隐式 `any` 和 `as any`；函数参数、返回值、解构项、事件对象、Express `req`/`res`、`catch` 错误在使用前应有明确类型或先完成类型收窄，并清理未使用的变量和导入。
+## 常见问题
+- 会话列表加载失败 → 检查是否绕过了服务端代理直连 Supabase
+- 插入 DB 报 RLS 违规 → 检查插入 payload 是否带 `client_key`
+- 带文件对话超时 → 文档提炼任务流耗时长（>120s），前端需容忍长等待，勿设过短的流超时
