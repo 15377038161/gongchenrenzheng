@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client';
 import { MarkdownView } from './components/MarkdownView';
 import { AgentProgress } from './components/AgentProgress';
 import { BackgroundEffect } from './components/BackgroundEffect';
-import { LeafFall } from './components/LeafFall';
 import {
   type Attachment,
   type ConversationRow,
@@ -129,11 +128,12 @@ function attIcon(type: string): string {
   return '📄';
 }
 
-/** 附件卡片：一眼可见上传了什么文件（名称 / 类型 / 大小） */
+/** 附件卡片：一眼可见上传了什么文件（名称 / 类型 / 大小）；上传中带 1.8s 细扫描光 */
 function AttachmentChip({ att, onRemove }: { att: Attachment; onRemove?: () => void }) {
+  const uploading = !att.objectId;
   return (
     <div
-      className="flex max-w-[260px] items-center gap-2.5 rounded-[10px] border border-hairline bg-white px-3 py-2 shadow-sm"
+      className={`flex max-w-[260px] items-center gap-2.5 rounded-[10px] border border-hairline bg-white px-3 py-2 shadow-sm ${uploading ? 'att-scan' : ''}`}
       title={att.name}
     >
       <span
@@ -173,6 +173,16 @@ function App() {
   const [pendingAtts, setPendingAtts] = useState<Attachment[]>([]);
   /** 语音输入状态 */
   const [listening, setListening] = useState(false);
+  /** 背景动效开关（localStorage 持久化，默认开启） */
+  const [bgFxOn, setBgFxOn] = useState(() => {
+    try {
+      return localStorage.getItem('engcert_bg_fx') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  /** 交互降感：输入聚焦/滚动聊天时降低背景动态层透明度 40% */
+  const [bgDimmed, setBgDimmed] = useState(false);
 
   const listRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -236,6 +246,33 @@ function App() {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, activeThought, pendingAtts]);
+
+  /** 背景动效状态联动：滚动聊天时降低动态层透明度；页面隐藏/侧栏抽屉打开时暂停 */
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    let dimTimer: ReturnType<typeof setTimeout> | undefined;
+    const onScroll = (): void => {
+      setBgDimmed(true);
+      clearTimeout(dimTimer);
+      // 停止滚动 1.5s 后恢复
+      dimTimer = setTimeout(() => setBgDimmed(false), 1500);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    const onVis = (): void => {
+      document.documentElement.dataset.paused = document.hidden ? '1' : '0';
+    };
+    document.addEventListener('visibilitychange', onVis);
+    onVis();
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      document.removeEventListener('visibilitychange', onVis);
+      clearTimeout(dimTimer);
+    };
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.paused = sidebarOpen ? '1' : '0';
+  }, [sidebarOpen]);
 
   const autoGrow = useCallback(() => {
     const ta = taRef.current;
@@ -557,8 +594,7 @@ function App() {
 
   return (
     <div className="relative flex h-full min-h-screen">
-      <BackgroundEffect />
-      <LeafFall />
+      <BackgroundEffect enabled={bgFxOn} dimmed={bgDimmed} />
 
       {/* 移动端遮罩 */}
       {sidebarOpen && (
@@ -638,6 +674,39 @@ function App() {
             </div>
           ))}
         </nav>
+
+        {/* 背景动效开关 */}
+        <div className="border-t border-hairline px-4 py-2.5">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={bgFxOn}
+            onClick={() => {
+              const next = !bgFxOn;
+              setBgFxOn(next);
+              try {
+                localStorage.setItem('engcert_bg_fx', next ? '1' : '0');
+              } catch {
+                // 持久化失败不阻断
+              }
+            }}
+            className="flex w-full items-center justify-between gap-2 rounded-[8px] px-1 py-1 text-[12.5px] text-ink-soft hover:bg-lake-mist/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+          >
+            <span>背景动效</span>
+            <span
+              aria-hidden="true"
+              className={`relative inline-flex h-[18px] w-[34px] shrink-0 items-center rounded-full transition-colors duration-200 ${
+                bgFxOn ? 'bg-lake-deep' : 'bg-lake-soft/70'
+              }`}
+            >
+              <span
+                className={`absolute h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                  bgFxOn ? 'translate-x-[16px]' : 'translate-x-[2px]'
+                }`}
+              />
+            </span>
+          </button>
+        </div>
 
         {/* 底部说明 */}
         <div className="border-t border-hairline px-4 py-3 text-[10.5px] leading-4 text-ink-faint">
@@ -823,6 +892,8 @@ function App() {
               <textarea
                 ref={taRef}
                 value={input}
+                onFocus={() => setBgDimmed(true)}
+                onBlur={() => setBgDimmed(false)}
                 onChange={(e) => {
                   setInput(e.target.value);
                   autoGrow();

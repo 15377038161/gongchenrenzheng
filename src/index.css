@@ -65,116 +65,315 @@ body {
   display: none;
 }
 
-/* ===== 背景动效（BackgroundEffect） ===== */
-.env-bg-flow {
-  animation: env-bg-drift 26s ease-in-out infinite alternate;
-}
-@keyframes env-bg-drift {
-  0% {
-    transform: translate3d(-1.5%, -1%, 0) scale(1);
-  }
-  100% {
-    transform: translate3d(1.5%, 1.5%, 0) scale(1.03);
-  }
-}
-
-.env-bubble {
+/* ===== 背景动效系统（BackgroundEffect 分层叠层，低干扰） ===== */
+/* 动态层默认透明度 1；交互降感（聚焦/滚动）时整体降 40% */
+.water-overlay,
+.wind-overlay,
+.branch-overlay,
+.leaf-drift-layer,
+.mist-overlay {
   position: absolute;
-  border-radius: full;
-  opacity: 0.35;
-  filter: blur(1px);
-  animation: env-float 18s ease-in-out infinite alternate;
+  inset: 0;
+  transition: opacity 0.45s ease;
 }
-.env-bubble-1 {
-  width: 140px;
-  height: 140px;
-  left: 6%;
-  top: 18%;
-  animation-duration: 20s;
+[data-dimmed='1'] .water-overlay,
+[data-dimmed='1'] .wind-overlay,
+[data-dimmed='1'] .branch-overlay,
+[data-dimmed='1'] .leaf-drift-layer,
+[data-dimmed='1'] .mist-overlay {
+  opacity: 0.6;
 }
-.env-bubble-2 {
-  width: 90px;
-  height: 90px;
-  right: 10%;
-  top: 12%;
-  animation-duration: 15s;
-  animation-delay: -5s;
-}
-.env-bubble-3 {
-  width: 200px;
-  height: 200px;
-  right: 22%;
-  bottom: 10%;
-  animation-duration: 24s;
-  animation-delay: -10s;
-}
-@keyframes env-float {
-  0% {
-    transform: translateY(0) translateX(0);
-  }
-  100% {
-    transform: translateY(-26px) translateX(12px);
-  }
+/* 页面隐藏/侧栏抽屉打开时暂停全部动画（data-paused 挂在 <html> 上） */
+html[data-paused='1'] .water-overlay *,
+html[data-paused='1'] .wind-overlay *,
+html[data-paused='1'] .branch-overlay *,
+html[data-paused='1'] .leaf-drift-layer *,
+html[data-paused='1'] .mist-overlay * {
+  animation-play-state: paused !important;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .env-bg-flow,
-  .env-bubble {
-    animation: none;
-  }
-}
-
-/* ===== 树叶飘落（LeafFall） ===== */
-.env-leaf {
+/* --- 水纹层：右下水面细曲线缓流 + 周期扩散水波 --- */
+.water-line {
   position: absolute;
-  top: -40px; /* 从视口外出发 */
+  border-radius: 9999px;
+  mix-blend-mode: screen;
   will-change: transform, opacity;
-  /* 下落（translateY 全程）→ 摆荡（translateX 往返）→ 自转（rotate） */
-  animation-name: leaf-fall, leaf-sway, leaf-spin;
-  animation-timing-function: linear, ease-in-out, ease-in-out;
-  animation-iteration-count: infinite, infinite, infinite;
+  animation: waterFlow 18s ease-in-out infinite alternate;
 }
-@keyframes leaf-fall {
-  0% {
-    transform: translateY(-5vh);
-    opacity: 0;
-  }
-  4% {
-    opacity: var(--leaf-opacity, 0.45);
-  }
-  92% {
-    opacity: var(--leaf-opacity, 0.45);
-  }
-  100% {
-    transform: translateY(108vh);
-    opacity: 0;
-  }
+.water-line-a {
+  left: 56%;
+  top: 76%;
+  width: 36vw;
+  height: 70px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(90, 140, 180, 0.55),
+    rgba(120, 170, 200, 0.18) 55%,
+    transparent 75%
+  );
 }
-@keyframes leaf-sway {
+.water-line-b {
+  left: 62%;
+  top: 84%;
+  width: 26vw;
+  height: 46px;
+  opacity: 0.7;
+  animation-duration: 15s;
+  animation-delay: -7s;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(110, 160, 195, 0.5),
+    transparent 70%
+  );
+}
+@keyframes waterFlow {
   0%,
   100% {
-    /* 与 leaf-fall 同元素叠加，仅做水平位移；用 translate3d 保持合成层 */
-    translate: -18px 0;
+    transform: translateX(-2%) scaleX(1);
+    opacity: 0.1;
   }
   50% {
-    translate: 18px 0;
+    transform: translateX(2%) scaleX(1.03);
+    opacity: 0.16;
   }
 }
-@keyframes leaf-spin {
+.water-ripple {
+  position: absolute;
+  border-radius: 9999px;
+  border: 1.5px solid rgba(90, 140, 180, 0.55);
+  opacity: 0;
+  will-change: transform, opacity;
+  /* 单周期 11s：约 5s 扩散消散 + 6s 静默 */
+  animation: waterRipple 11s ease-in-out infinite;
+}
+@keyframes waterRipple {
   0% {
-    rotate: -35deg;
+    transform: scale(0.72);
+    opacity: 0;
   }
-  50% {
-    rotate: 55deg;
+  20% {
+    opacity: 0.16;
+  }
+  45% {
+    transform: scale(1.35);
+    opacity: 0;
   }
   100% {
-    rotate: -35deg;
+    transform: scale(1.35);
+    opacity: 0;
   }
 }
 
+/* --- 气流线层：上缘空白，从右向左极缓平移 --- */
+.wind-line {
+  position: absolute;
+  height: 1.5px;
+  width: 22vw;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(220, 238, 245, 0.95),
+    rgba(197, 232, 238, 0.7),
+    transparent
+  );
+  opacity: 0.14;
+  will-change: transform, opacity;
+  animation: windDrift 22s linear infinite;
+}
+.wind-line-a {
+  top: 12%;
+  right: 4%;
+}
+.wind-line-b {
+  top: 20%;
+  right: 14%;
+  animation-duration: 26s;
+  animation-delay: -12s;
+  opacity: 0.1;
+}
+@keyframes windDrift {
+  0% {
+    transform: translateX(6%);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.14;
+  }
+  88% {
+    opacity: 0.12;
+  }
+  100% {
+    transform: translateX(-14%);
+    opacity: 0;
+  }
+}
+
+/* --- 枝叶层：右上真实素材，枝干连接点（右缘）为摆动原点 --- */
+.branch-overlay {
+  overflow: visible;
+}
+.branch-img {
+  position: absolute;
+  top: -36px;
+  right: -70px;
+  width: min(36vw, 440px);
+  max-width: none;
+  display: block;
+  transform-origin: 100% 38%; /* 枝干连接点在右缘中部 */
+  will-change: transform;
+  animation: branchSway 7.5s ease-in-out infinite;
+}
+@keyframes branchSway {
+  0%,
+  100% {
+    transform: rotate(-0.6deg) translateY(0);
+  }
+  50% {
+    transform: rotate(1deg) translateY(1px);
+  }
+}
+
+/* --- 飘叶层：外缘路径缓慢飘落，同一时刻最多两片 ---
+   3 片叶均为 24s 周期、延迟 0/8/16s、可见占空比 60%，保证最多 2 片并发 */
+.drift-leaf {
+  position: absolute;
+  top: -10vh;
+  will-change: transform, opacity;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+@keyframes leafDriftA {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(-8deg);
+    opacity: 0;
+  }
+  6% {
+    opacity: var(--leaf-o, 0.3);
+  }
+  54% {
+    opacity: calc(var(--leaf-o, 0.3) * 0.75);
+  }
+  60%,
+  100% {
+    transform: translate3d(-6vw, 112vh, 0) rotate(10deg);
+    opacity: 0;
+  }
+}
+@keyframes leafDriftB {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(8deg);
+    opacity: 0;
+  }
+  6% {
+    opacity: var(--leaf-o, 0.3);
+  }
+  54% {
+    opacity: calc(var(--leaf-o, 0.3) * 0.75);
+  }
+  60%,
+  100% {
+    transform: translate3d(4vw, 112vh, 0) rotate(-10deg);
+    opacity: 0;
+  }
+}
+
+/* --- 雾气层：大范围极淡径向渐变缓慢呼吸 --- */
+.mist-blob {
+  position: absolute;
+  border-radius: 9999px;
+  will-change: transform, opacity;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 255, 255, 0.95),
+    rgba(232, 244, 248, 0.5) 55%,
+    transparent 72%
+  );
+  animation: mistBreathe 26s ease-in-out infinite;
+}
+.mist-blob-a {
+  left: -8vw;
+  top: 6vh;
+  width: 46vw;
+  height: 30vh;
+}
+.mist-blob-b {
+  right: -10vw;
+  bottom: 4vh;
+  width: 40vw;
+  height: 26vh;
+  animation-duration: 30s;
+  animation-delay: -13s;
+}
+@keyframes mistBreathe {
+  0%,
+  100% {
+    opacity: 0.04;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.1;
+    transform: scale(1.06);
+  }
+}
+
+/* --- 上传扫描光（AttachmentChip，单次 1.8s） --- */
+.att-scan {
+  position: relative;
+  overflow: hidden;
+}
+.att-scan::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    rgba(58, 103, 171, 0.16) 50%,
+    transparent 70%
+  );
+  animation: attScan 1.8s ease-in-out infinite;
+}
+@keyframes attScan {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(110%);
+  }
+}
+
+/* --- 移动端（≤640px）：仅保留弱水纹与一组枝叶轻摆 --- */
+@media (max-width: 640px) {
+  .leaf-drift-layer,
+  .mist-overlay,
+  .wind-overlay {
+    display: none;
+  }
+  .water-line,
+  .water-ripple {
+    opacity: 0.6;
+  }
+}
+
+/* --- 无障碍：系统级减少动效时全部静止 --- */
 @media (prefers-reduced-motion: reduce) {
-  .env-leaf {
-    animation: none;
+  .water-overlay,
+  .wind-overlay,
+  .branch-overlay,
+  .leaf-drift-layer,
+  .mist-overlay,
+  .water-line,
+  .water-ripple,
+  .wind-line,
+  .branch-img,
+  .drift-leaf,
+  .mist-blob,
+  .att-scan::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .drift-leaf {
     opacity: 0;
   }
 }
