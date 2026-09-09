@@ -124,6 +124,61 @@ body {
   }
 }
 
+/* ===== 树叶飘落（LeafFall） ===== */
+.env-leaf {
+  position: absolute;
+  top: -40px; /* 从视口外出发 */
+  will-change: transform, opacity;
+  /* 下落（translateY 全程）→ 摆荡（translateX 往返）→ 自转（rotate） */
+  animation-name: leaf-fall, leaf-sway, leaf-spin;
+  animation-timing-function: linear, ease-in-out, ease-in-out;
+  animation-iteration-count: infinite, infinite, infinite;
+}
+@keyframes leaf-fall {
+  0% {
+    transform: translateY(-5vh);
+    opacity: 0;
+  }
+  4% {
+    opacity: var(--leaf-opacity, 0.45);
+  }
+  92% {
+    opacity: var(--leaf-opacity, 0.45);
+  }
+  100% {
+    transform: translateY(108vh);
+    opacity: 0;
+  }
+}
+@keyframes leaf-sway {
+  0%,
+  100% {
+    /* 与 leaf-fall 同元素叠加，仅做水平位移；用 translate3d 保持合成层 */
+    translate: -18px 0;
+  }
+  50% {
+    translate: 18px 0;
+  }
+}
+@keyframes leaf-spin {
+  0% {
+    rotate: -35deg;
+  }
+  50% {
+    rotate: 55deg;
+  }
+  100% {
+    rotate: -35deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .env-leaf {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 /* ===== Markdown 渲染（MarkdownView） ===== */
 .envchat-md {
   font-size: 15px;

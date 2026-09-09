@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { MarkdownView } from './components/MarkdownView';
 import { AgentProgress } from './components/AgentProgress';
 import { BackgroundEffect } from './components/BackgroundEffect';
+import { LeafFall } from './components/LeafFall';
 import {
   type Attachment,
   type ConversationRow,
@@ -557,6 +558,7 @@ function App() {
   return (
     <div className="relative flex h-full min-h-screen">
       <BackgroundEffect />
+      <LeafFall />
 
       {/* 移动端遮罩 */}
       {sidebarOpen && (
