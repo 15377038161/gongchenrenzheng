@@ -158,9 +158,17 @@ export function chatOnce(
   const finish = (event: RobotEvent) => {
     if (settled) return;
     settled = true;
+    clearTimeout(idleTimer);
     onEvent(event);
     try { ws.close(); } catch { /* 忽略关闭异常 */ }
   };
+
+  // 空闲超时兜底：上游 WS 打开但静默不回（如会话过期）时，保证流一定会结束，
+  // 避免前端 SSE 永久挂起导致界面卡死。每收到下行消息即重置。
+  const IDLE_LIMIT_MS = 75_000;
+  const idleTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+    finish({ type: 'error', message: '智能体长时间无响应（可能是会话已过期），请重新发送' });
+  }, IDLE_LIMIT_MS);
 
   const heartbeat = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -207,6 +215,8 @@ export function chatOnce(
   };
 
   ws.onmessage = (ev: MessageEvent) => {
+    // 收到任何下行消息即视为链路活跃，重置空闲超时
+    idleTimer.refresh();
     let data: RobotWsMessage;
     try {
       data = JSON.parse(String(ev.data)) as RobotWsMessage;
@@ -286,6 +296,7 @@ export function chatOnce(
   return {
     close: () => {
       cleanup();
+      clearTimeout(idleTimer);
       try { ws.close(); } catch { /* 忽略关闭异常 */ }
     },
   };

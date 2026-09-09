@@ -91,21 +91,52 @@ const SUGGESTIONS = [
   '读取第 3 章 课程体系的内容',
 ];
 
-/** 从 localStorage 读取智能体会话映射（本地对话 → chaoxing 会话） */
+/** 智能体会话缓存有效期：12 小时（超星访客会话可能过期，超期自动失效重建） */
+const ROBOT_SESSION_TTL = 12 * 60 * 60 * 1000;
+
+interface CachedRobotSession {
+  session: RobotSession;
+  ts: number;
+}
+
+/** 各会话的缓存时间（跨 save 保留原始时间戳，避免保存操作刷新 TTL） */
+const sessionTimestamps: Record<string, number> = {};
+
+/** 从 localStorage 读取智能体会话映射（本地对话 → chaoxing 会话）；过期条目直接丢弃 */
 function loadRobotSessions(): Record<string, RobotSession> {
   try {
-    return (
-      JSON.parse(localStorage.getItem('engcert_robot_sessions') ?? 'null') ??
-      JSON.parse(localStorage.getItem('envchat_robot_sessions') ?? 'null') ??
-      {}
-    ) as Record<string, RobotSession>;
+    const raw = JSON.parse(localStorage.getItem('engcert_robot_sessions') ?? 'null') as
+      | Record<string, CachedRobotSession>
+      | null;
+    const out: Record<string, RobotSession> = {};
+    if (raw && typeof raw === 'object') {
+      const now = Date.now();
+      for (const [id, entry] of Object.entries(raw)) {
+        if (
+          entry &&
+          typeof entry === 'object' &&
+          entry.session &&
+          typeof entry.ts === 'number' &&
+          now - entry.ts < ROBOT_SESSION_TTL
+        ) {
+          out[id] = entry.session;
+          sessionTimestamps[id] = entry.ts;
+        }
+      }
+    }
+    return out;
   } catch {
     return {};
   }
 }
 
 function saveRobotSessions(map: Record<string, RobotSession>): void {
-  localStorage.setItem('engcert_robot_sessions', JSON.stringify(map));
+  const raw: Record<string, CachedRobotSession> = {};
+  const now = Date.now();
+  for (const [id, session] of Object.entries(map)) {
+    raw[id] = { session, ts: sessionTimestamps[id] ?? now };
+  }
+  localStorage.setItem('engcert_robot_sessions', JSON.stringify(raw));
 }
 
 let nextTempId = 1;
@@ -291,6 +322,7 @@ function App() {
       throw new Error('申请智能体会话失败');
     }
     robotSessionsRef.current[convId] = data.session;
+    sessionTimestamps[convId] = Date.now(); // 新建会话记录申请时间，供 TTL 判断
     saveRobotSessions(robotSessionsRef.current);
     return data.session;
   }, []);
@@ -315,6 +347,7 @@ function App() {
       await deleteConversation(id);
       const rest = { ...robotSessionsRef.current };
       delete rest[id];
+      delete sessionTimestamps[id];
       robotSessionsRef.current = rest;
       saveRobotSessions(rest);
       setConversations((prev) => {
@@ -391,8 +424,21 @@ function App() {
         setMessages((prev) => prev.map((m) => (m.id === agentMsg.id ? fn(m) : m)));
       };
 
+      // 3. 先持久化用户消息（不等流结束）：即使后续流式失败/挂起，历史记录也已可见
       try {
-        // 3. 获取智能体会话（同一会话复用同一 chaoxing conversation，天然保持多轮上下文）
+        await insertMessage(convId, 'user', q, [], attachments);
+        await touchConversation(convId);
+        setConversations((prev) => {
+          const others = prev.filter((c) => c.id !== convId);
+          const cur = prev.find((c) => c.id === convId);
+          return cur ? [cur, ...others] : others;
+        });
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : '消息保存失败');
+      }
+
+      try {
+        // 4. 获取智能体会话（同一会话复用同一 chaoxing conversation，天然保持多轮上下文）
         const robot = await ensureRobotSession(convId);
 
         // 4. SSE 流式请求（已上传成功的附件以 fileInfo 形式随消息携带）
@@ -464,9 +510,8 @@ function App() {
         }
         patch((m) => ({ ...m, streaming: false }));
 
-        // 5. 持久化（用户消息 + 智能体消息）
+        // 5. 持久化智能体回复（用户消息已在请求前入库）
         try {
-          await insertMessage(convId, 'user', q, [], attachments);
           if (finalText) {
             await insertMessage(convId, 'assistant', finalText, lastThoughts);
           }
@@ -482,6 +527,14 @@ function App() {
       } catch (err) {
         const msg = err instanceof Error ? err.message : '回复失败，请重试';
         patch((m) => ({ ...m, content: m.content || msg, streaming: false }));
+        // 失败（含超时）时丢弃缓存的智能体会话：疑似过期，下次发送重新申请
+        if (convId && robotSessionsRef.current[convId]) {
+          const rest = { ...robotSessionsRef.current };
+          delete rest[convId];
+          delete sessionTimestamps[convId];
+          robotSessionsRef.current = rest;
+          saveRobotSessions(rest);
+        }
       } finally {
         setActiveThought('');
         setSending(false);
