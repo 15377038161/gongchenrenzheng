@@ -14,8 +14,15 @@ const app = express();
 const server = createServer(app);
 
 async function startServer(): Promise<Server> {
+  // 添加请求体解析（须在 API 路由之前）
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+
+  // 注册 API 路由（必须在 Vite 中间件之前，否则 SPA fallback 会吞掉 /api/* 请求）
+  app.use(router);
+
   // 集成 Vite（开发模式）或静态文件服务（生产模式）
-  // 放在最前面，确保 Vite 能拦截 dev 资源请求
+  // 放在 API 路由之后，确保 API 请求优先处理
   // 传入 HTTP server，使 Vite 能在其上挂载 HMR WebSocket
   await setupVite(app, server);
 
@@ -30,13 +37,6 @@ async function startServer(): Promise<Server> {
       next();
     });
   }
-
-  // 添加请求体解析
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
-
-  // 注册 API 路由
-  app.use(router);
 
   // 全局错误处理
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

@@ -2,7 +2,16 @@
 
 ## 项目简介
 
-智识工作台：超星智能体的重设计交互外壳。通过 iframe 嵌入超星智能体对话页（robot.chaoxing.com/coze?unitId=1731&robotId=9a31c8e736704a0b9d57b35c73da681f），外层提供书房纸墨风格的 UI 壳：品牌头栏、能力速览侧栏、排版式欢迎屏、iframe 加载/重载控制。视觉规范见 DESIGN.md。
+智识对话：超星智能体的**自研交互界面**（已弃用 iframe 嵌入方案）。后端 Express 代理超星智能体真实对话链路（匿名访客会话 + WebSocket 对话协议），前端以 SSE 流式接收、打字机式渲染，完整调用智能体能力而完全不展示其原生页面。视觉规范见 DESIGN.md。
+
+## 智能体代理协议（关键）
+
+- 会话申请：`GET https://robot.chaoxing.com/v1/front/chat/visitor/apply?unitId=1731&robotId=9a31c8e736704a0b9d57b35c73da681f&channel=WEB...`（匿名可用，返回 visitorId/visitorVc/conversationId）
+- 对话通道：`WSS /v1/ws/chat/{unitId}/visitor?userId=&channel=WEB&conversationId=&robotId=&visitorVc=`
+- 发送格式：`{ communicateType: 'DATA', messageType: 'TEXT', direction: 'IN', msg: { channel: 'WEB', question, questionType: 'TEXT', fileInfo: [] }, ... }`（注意：`VISITOR_IN` 是转人工消息，勿误用）
+- 下行解析：`type: SEMANTIC/LLM` 为思考事件（meta.description）；`answer` 内嵌 JSON 的 `responseText` 为答案正文分片；`flag: "stop"` 或 `sseStop: true` 为流结束；`systemMsg: true` 且无 responseText 的是意图分类回显，需过滤
+- 本项目接口：`POST /api/chat/session`（申请会话）、`GET /api/chat/stream?q=&visitorId=&visitorVc=&conversationId=`（SSE：thought/delta/final/error 事件）
+- 路由挂载顺序：API 路由必须在 Vite 中间件之前（server.ts 已修复，勿回退）
 
 ## 技术栈
 
