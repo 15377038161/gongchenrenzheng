@@ -69,7 +69,6 @@ body {
 /* 动态层默认透明度 1；交互降感（聚焦/滚动）时整体降 40% */
 .water-overlay,
 .wind-overlay,
-.branch-overlay,
 .leaf-drift-layer,
 .mist-overlay {
   position: absolute;
@@ -78,7 +77,6 @@ body {
 }
 [data-dimmed='1'] .water-overlay,
 [data-dimmed='1'] .wind-overlay,
-[data-dimmed='1'] .branch-overlay,
 [data-dimmed='1'] .leaf-drift-layer,
 [data-dimmed='1'] .mist-overlay {
   opacity: 0.6;
@@ -86,7 +84,6 @@ body {
 /* 页面隐藏/侧栏抽屉打开时暂停全部动画（data-paused 挂在 <html> 上） */
 html[data-paused='1'] .water-overlay *,
 html[data-paused='1'] .wind-overlay *,
-html[data-paused='1'] .branch-overlay *,
 html[data-paused='1'] .leaf-drift-layer *,
 html[data-paused='1'] .mist-overlay * {
   animation-play-state: paused !important;
@@ -209,33 +206,7 @@ html[data-paused='1'] .mist-overlay * {
   }
 }
 
-/* --- 枝叶层：右上真实素材，枝干连接点（右缘）为摆动原点 --- */
-.branch-overlay {
-  overflow: visible;
-}
-.branch-img {
-  position: absolute;
-  top: -36px;
-  right: -70px;
-  width: min(36vw, 440px);
-  max-width: none;
-  display: block;
-  transform-origin: 100% 38%; /* 枝干连接点在右缘中部 */
-  will-change: transform;
-  animation: branchSway 7.5s ease-in-out infinite;
-}
-@keyframes branchSway {
-  0%,
-  100% {
-    transform: rotate(-0.6deg) translateY(0);
-  }
-  50% {
-    transform: rotate(1deg) translateY(1px);
-  }
-}
-
-/* --- 飘叶层：外缘路径缓慢飘落，同一时刻最多两片 ---
-   3 片叶均为 24s 周期、延迟 0/8/16s、可见占空比 60%，保证最多 2 片并发 */
+/* --- 飘叶层：全屏横向分布缓慢飘落 --- */
 .drift-leaf {
   position: absolute;
   top: -10vh;
@@ -343,9 +314,8 @@ html[data-paused='1'] .mist-overlay * {
   }
 }
 
-/* --- 移动端（≤640px）：仅保留弱水纹与一组枝叶轻摆 --- */
+/* --- 移动端（≤640px）：保留全屏飘叶与弱水纹，关闭雾气与气流线 --- */
 @media (max-width: 640px) {
-  .leaf-drift-layer,
   .mist-overlay,
   .wind-overlay {
     display: none;
@@ -360,13 +330,11 @@ html[data-paused='1'] .mist-overlay * {
 @media (prefers-reduced-motion: reduce) {
   .water-overlay,
   .wind-overlay,
-  .branch-overlay,
   .leaf-drift-layer,
   .mist-overlay,
   .water-line,
   .water-ripple,
   .wind-line,
-  .branch-img,
   .drift-leaf,
   .mist-blob,
   .att-scan::after {
