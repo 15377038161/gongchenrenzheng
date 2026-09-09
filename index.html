@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Coder编程，你的 AI 开发伙伴已就位" />
+    <title>Coder编程 - AI 开发伙伴</title>
+    <!-- iframe-route-sync：子页面路由 ↔ 父页面地址双向同步 -->
+    <script src="https://robot.chaoxing.com/coder-sdk/iframe-route-sync/child.umd.js"></script>
+    <!-- iframe-error-sync：子页面 dev 错误上报到父页面调试面板 -->
+    <script src="https://robot.chaoxing.com/coder-sdk/iframe-error-sync/child.umd.js"></script>
+    <!-- iframe-element-picker：子页面元素选取能力 -->
+    <script src="https://robot.chaoxing.com/coder-sdk/iframe-element-picker/child.umd.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      window.__errorBridge = IframeErrorSync.child
+        .create({ debug: false, reporters: 'auto' })
+        .init();
+    </script>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>

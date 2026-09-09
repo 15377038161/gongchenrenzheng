@@ -1,0 +1,13 @@
+[project]
+requires = ["nodejs-24"]
+
+[dev]
+build = ["bash", "./scripts/prepare.sh"]
+run = ["bash", "./scripts/dev.sh"]
+validate = ["bash", "./scripts/validate.sh"]
+deps = ["git"] # -> apt install git
+
+[deploy]
+target = "static"
+build = ["bash","./scripts/build.sh"]
+deps = ["git"] # -> apt install git
