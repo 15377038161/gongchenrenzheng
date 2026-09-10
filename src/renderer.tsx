@@ -1088,9 +1088,9 @@ function App() {
           </div>
         )}
 
-        {/* 消息流 */}
+        {/* 消息流：消息块之间 44px 大留白，问答分组清晰（适老化） */}
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-5 py-8">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-11 px-5 py-9">
             {messages.length === 0 && (
               <div className="flex flex-1 flex-col items-start justify-center gap-5 py-14">
                 <p className="text-[15.5px] tracking-[0.2em] text-lake-deep">HUST · 环境科学与工程学院</p>
