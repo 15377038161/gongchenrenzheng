@@ -1204,7 +1204,7 @@ function App() {
                   <path d="M10 17l5-5-5-5" />
                   <path d="M15 12H3" />
                 </svg>
-                超星一键登录
+                登录
               </button>
             )}
           </div>
