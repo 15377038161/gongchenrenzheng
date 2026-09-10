@@ -53,7 +53,7 @@ export function AgentProgress({ thoughts, active, streaming }: AgentProgressProp
             )}
             <div className="flex w-16 flex-col items-center gap-1.5 sm:w-20">
               <span
-                className={`flex h-7 w-7 items-center justify-center rounded-full text-[12px] font-semibold transition-all duration-300 ${
+                className={`flex h-7 w-7 items-center justify-center rounded-full text-[14.5px] font-semibold transition-all duration-300 ${
                   s.done
                     ? 'bg-[#d3ecd9] text-[#2e7d46]'
                     : i === current
@@ -70,7 +70,7 @@ export function AgentProgress({ thoughts, active, streaming }: AgentProgressProp
                 )}
               </span>
               <span
-                className={`text-[11px] leading-4 transition-colors duration-300 ${
+                className={`text-[13.5px] leading-4 transition-colors duration-300 ${
                   i === current && !s.done ? 'font-medium text-lake-deep' : 'text-ink-faint'
                 }`}
               >
@@ -85,7 +85,7 @@ export function AgentProgress({ thoughts, active, streaming }: AgentProgressProp
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="mt-2.5 flex items-center gap-2 text-[12.5px] text-ink-soft transition-colors hover:text-lake-mid focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+        className="mt-2.5 flex items-center gap-2 text-[15px] text-ink-soft transition-colors hover:text-lake-mid focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
       >
         <span
           aria-hidden="true"
@@ -93,7 +93,7 @@ export function AgentProgress({ thoughts, active, streaming }: AgentProgressProp
         />
         <span className="truncate">{label}</span>
         {!streaming && thoughts.length > 0 && (
-          <span aria-hidden="true" className={`shrink-0 text-[10px] transition-transform ${expanded(open, streaming) ? 'rotate-90' : ''}`}>
+          <span aria-hidden="true" className={`shrink-0 text-[12px] transition-transform ${expanded(open, streaming) ? 'rotate-90' : ''}`}>
             ›
           </span>
         )}
@@ -102,7 +102,7 @@ export function AgentProgress({ thoughts, active, streaming }: AgentProgressProp
       {expanded(open, streaming) && thoughts.length > 0 && (
         <ul className="mt-1.5 space-y-0.5 border-l-2 border-hairline pl-4">
           {thoughts.map((t, i) => (
-            <li key={i} className="text-[12.5px] leading-6 text-ink-faint">
+            <li key={i} className="text-[15px] leading-6 text-ink-faint">
               {t}
             </li>
           ))}

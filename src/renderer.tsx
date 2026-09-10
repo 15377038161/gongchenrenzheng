@@ -218,20 +218,20 @@ function AttachmentChip({ att, onRemove }: { att: Attachment; onRemove?: () => v
     >
       <span
         aria-hidden="true"
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-lake-pale text-[15px]"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-lake-pale text-[18px]"
       >
         {attIcon(att.type)}
       </span>
       <div className="min-w-0 flex-1 leading-tight">
-        <p className="truncate text-[13px] font-medium text-ink">{att.name}</p>
-        <p className="mt-0.5 text-[11px] text-ink-faint">{fmtSize(att.size)}</p>
+        <p className="truncate text-[15.5px] font-medium text-ink">{att.name}</p>
+        <p className="mt-0.5 text-[13.5px] text-ink-faint">{fmtSize(att.size)}</p>
       </div>
       {onRemove && (
         <button
           type="button"
           aria-label={`移除 ${att.name}`}
           onClick={onRemove}
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[12px] text-ink-faint hover:bg-lake-pale hover:text-lake-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[14.5px] text-ink-faint hover:bg-lake-pale hover:text-lake-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
         >
           ×
         </button>
@@ -963,8 +963,8 @@ function App() {
             className="h-11 w-11 shrink-0 select-none"
           />
           <div className="flex flex-col leading-tight">
-            <span className="font-serif-sc text-[16px] font-semibold text-ink">{PAGE.brand}</span>
-            <span className="mt-0.5 text-[10px] leading-3 text-ink-faint">HUST · 环境学院</span>
+            <span className="font-serif-sc text-[19px] font-semibold text-ink">{PAGE.brand}</span>
+            <span className="mt-0.5 text-[12px] leading-3 text-ink-faint">HUST · 环境学院</span>
           </div>
         </div>
 
@@ -973,7 +973,7 @@ function App() {
           <button
             type="button"
             onClick={() => void newChat()}
-            className="flex w-full items-center justify-center gap-2 rounded-[10px] bg-lake-deep px-4 py-2.5 text-[14px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+            className="flex w-full items-center justify-center gap-2 rounded-[10px] bg-lake-deep px-4 py-2.5 text-[17px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
           >
             <span aria-hidden="true">＋</span>
             {PAGE.newChat}
@@ -981,12 +981,12 @@ function App() {
         </div>
 
         {/* 历史会话列表 */}
-        <div className="px-4 pb-2 pt-1 text-[11px] font-medium tracking-[0.14em] text-ink-faint uppercase">
+        <div className="px-4 pb-2 pt-1 text-[13.5px] font-medium tracking-[0.14em] text-ink-faint uppercase">
           {PAGE.history}
         </div>
         <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
           {conversations.length === 0 && (
-            <p className="px-3 py-4 text-[13px] leading-6 text-ink-faint">暂无历史会话</p>
+            <p className="px-3 py-4 text-[15.5px] leading-6 text-ink-faint">暂无历史会话</p>
           )}
           {conversations.map((c) => (
             <div
@@ -1001,7 +1001,7 @@ function App() {
                   setActiveId(c.id);
                   setSidebarOpen(false);
                 }}
-                className="min-w-0 flex-1 truncate px-3 py-2.5 text-left text-[13.5px] text-ink focus-visible:outline-none"
+                className="min-w-0 flex-1 truncate px-3 py-2.5 text-left text-[16px] text-ink focus-visible:outline-none"
                 title={c.title}
               >
                 {c.title}
@@ -1010,7 +1010,7 @@ function App() {
                 type="button"
                 aria-label={PAGE.deleteLabel}
                 onClick={() => void removeChat(c.id)}
-                className="mr-1 hidden h-6 w-6 shrink-0 items-center justify-center rounded-md text-[13px] text-ink-faint hover:bg-white hover:text-lake-deep group-hover:flex focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+                className="mr-1 hidden h-6 w-6 shrink-0 items-center justify-center rounded-md text-[15.5px] text-ink-faint hover:bg-white hover:text-lake-deep group-hover:flex focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
               >
                 ×
               </button>
@@ -1033,7 +1033,7 @@ function App() {
                 // 持久化失败不阻断
               }
             }}
-            className="flex w-full items-center justify-between gap-2 rounded-[8px] px-1 py-1 text-[12.5px] text-ink-soft hover:bg-lake-mist/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+            className="flex w-full items-center justify-between gap-2 rounded-[8px] px-1 py-1 text-[15px] text-ink-soft hover:bg-lake-mist/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
           >
             <span>背景动效</span>
             <span
@@ -1052,7 +1052,7 @@ function App() {
         </div>
 
         {/* 底部说明 */}
-        <div className="border-t border-hairline px-4 py-3 text-[10.5px] leading-4 text-ink-faint">
+        <div className="border-t border-hairline px-4 py-3 text-[13px] leading-4 text-ink-faint">
           {PAGE.brandSub}
         </div>
       </aside>
@@ -1070,9 +1070,9 @@ function App() {
             >
               ☰
             </button>
-            <h1 className="truncate text-[15px] font-medium text-ink">{activeTitle}</h1>
+            <h1 className="truncate text-[18px] font-medium text-ink">{activeTitle}</h1>
           </div>
-          <div className="flex items-center gap-2 text-[12.5px] text-ink-faint">
+          <div className="flex items-center gap-2 text-[15px] text-ink-faint">
             <span aria-hidden="true" className="h-1.5 w-1.5 animate-pulse rounded-full bg-lake-deep" />
             在线
           </div>
@@ -1080,7 +1080,7 @@ function App() {
 
         {/* 错误提示 */}
         {loadError && (
-          <div className="mx-4 mt-3 rounded-[8px] border border-lake-soft bg-lake-pale px-4 py-2.5 text-[13px] text-ink-soft sm:mx-6">
+          <div className="mx-4 mt-3 rounded-[8px] border border-lake-soft bg-lake-pale px-4 py-2.5 text-[15.5px] text-ink-soft sm:mx-6">
             {loadError}
             <button type="button" className="ml-3 text-lake-deep underline" onClick={() => setLoadError('')}>
               忽略
@@ -1093,11 +1093,11 @@ function App() {
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-5 py-8">
             {messages.length === 0 && (
               <div className="flex flex-1 flex-col items-start justify-center gap-5 py-14">
-                <p className="text-[13px] tracking-[0.2em] text-lake-deep">HUST · 环境科学与工程学院</p>
+                <p className="text-[15.5px] tracking-[0.2em] text-lake-deep">HUST · 环境科学与工程学院</p>
                 <h2 className="font-serif-sc text-[2.2rem] leading-[1.35] font-semibold text-ink">
                   {PAGE.welcomeTitle}
                 </h2>
-                <p className="max-w-lg text-[15px] leading-8 text-ink-soft">{PAGE.welcomeDesc}</p>
+                <p className="max-w-lg text-[18px] leading-8 text-ink-soft">{PAGE.welcomeDesc}</p>
                 <div className="mt-2 flex flex-wrap gap-2.5">
                   {SUGGESTIONS.map((s) => (
                     <button
@@ -1105,7 +1105,7 @@ function App() {
                       type="button"
                       disabled={sending}
                       onClick={() => void send(s)}
-                      className="rounded-full border border-hairline bg-white/70 px-4 py-2.5 text-[14px] text-ink-soft transition-colors duration-200 hover:border-lake-deep hover:text-lake-deep disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+                      className="rounded-full border border-hairline bg-white/70 px-4 py-2.5 text-[17px] text-ink-soft transition-colors duration-200 hover:border-lake-deep hover:text-lake-deep disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
                     >
                       {s}
                     </button>
@@ -1125,16 +1125,16 @@ function App() {
                     </div>
                   )}
                   {m.content && (
-                    <div className="max-w-[85%] rounded-[14px] rounded-br-[4px] bg-lake-soft/50 px-4 py-3 text-[15px] leading-8 text-ink">
+                    <div className="max-w-[85%] rounded-[16px] rounded-br-[5px] border border-lake-soft bg-lake-pale px-5 py-3.5 text-[18px] leading-[1.75] text-ink shadow-[0_2px_10px_rgba(58,103,171,0.10)]">
                       {m.content}
                     </div>
                   )}
                 </div>
               ) : (
-                <div key={m.id} className="flex flex-col gap-2">
-                  <div className="flex items-center gap-2">
-                    <img src="/hust-logo.png" alt="" className="h-5 w-5 shrink-0 opacity-80" aria-hidden="true" />
-                    <span className="text-[13px] font-medium text-ink-soft">{PAGE.agentLabel}</span>
+                <div key={m.id} className="flex flex-col gap-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <img src="/hust-logo.png" alt="" className="h-6 w-6 shrink-0 opacity-80" aria-hidden="true" />
+                    <span className="text-[17.5px] font-medium text-ink-soft">{PAGE.agentLabel}</span>
                   </div>
 
                   <AgentProgress
@@ -1190,10 +1190,10 @@ function App() {
                   )}
 
                   {!m.content && !m.form && !m.menu && m.streaming && m.thoughts.length === 0 && !activeThought && (
-                    <div className="flex items-center gap-2 text-[13px] text-ink-faint">
+                    <div className="flex items-center gap-2.5 rounded-[12px] bg-white/70 px-4 py-2.5 text-[17px] text-ink-soft">
                       <span
                         aria-hidden="true"
-                        className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-hairline border-t-lake-deep"
+                        className="h-4 w-4 animate-spin rounded-full border-[1.5px] border-hairline border-t-lake-deep"
                       />
                       正在连接智能体…
                     </div>
@@ -1220,7 +1220,7 @@ function App() {
               </div>
             )}
 
-            <div className="flex items-end gap-2 rounded-[14px] border border-hairline bg-white px-3 py-2.5 shadow-sm transition-colors focus-within:border-lake-deep focus-within:shadow-[0_0_0_3px_rgba(58,103,171,0.1)]">
+            <div className="flex items-end gap-2.5 rounded-[16px] border border-hairline bg-white px-3.5 py-3 shadow-[0_2px_12px_rgba(27,39,51,0.06)] transition-all duration-200 focus-within:border-lake-deep focus-within:shadow-[0_0_0_3px_rgba(58,103,171,0.12),0_4px_16px_rgba(58,103,171,0.10)]">
               {/* 上传文件 */}
               <input
                 ref={fileRef}
@@ -1235,7 +1235,7 @@ function App() {
                 title={PAGE.uploadLabel}
                 disabled={sending}
                 onClick={() => fileRef.current?.click()}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[17px] text-ink-soft transition-colors hover:bg-lake-pale hover:text-lake-deep disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] text-[18px] text-ink-soft transition-all duration-200 hover:scale-[1.05] hover:bg-lake-pale hover:text-lake-deep disabled:opacity-40 disabled:hover:scale-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
               >
                 <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
@@ -1249,10 +1249,10 @@ function App() {
                 title={PAGE.voiceLabel}
                 disabled={sending}
                 onClick={toggleVoice}
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] transition-colors disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep ${
+                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] transition-all duration-200 disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep ${
                   listening
                     ? 'animate-[env-breath_2s_ease-in-out_infinite] bg-lake-deep text-white'
-                    : 'text-ink-soft hover:bg-lake-pale hover:text-lake-deep'
+                    : 'text-ink-soft hover:scale-[1.05] hover:bg-lake-pale hover:text-lake-deep disabled:hover:scale-100'
                 }`}
               >
                 <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -1276,19 +1276,19 @@ function App() {
                 rows={1}
                 placeholder={listening ? '正在聆听，请说话…' : PAGE.placeholder}
                 disabled={sending}
-                className="max-h-[160px] min-h-[36px] flex-1 resize-none bg-transparent px-1 text-[15px] leading-8 text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
+                className="max-h-[180px] min-h-[44px] flex-1 resize-none bg-transparent px-1.5 text-[18px] leading-[1.7] text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
               />
 
               <button
                 type="button"
                 disabled={!canSend}
                 onClick={() => void send(input, pendingAtts)}
-                className="shrink-0 rounded-[10px] bg-lake-deep px-5 py-2 text-[14px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+                className="shrink-0 rounded-[12px] bg-lake-deep px-6 py-2.5 text-[19px] font-medium text-white transition-all duration-200 hover:scale-[1.03] hover:bg-[#2f5689] hover:shadow-[0_4px_12px_rgba(58,103,171,0.3)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
               >
                 发送
               </button>
             </div>
-            <p className="mt-2 text-center text-[11.5px] text-ink-faint">
+            <p className="mt-2.5 text-center text-[15.5px] text-ink-faint">
               {PAGE.footer} · 支持上传附件（展示名称与大小）与语音输入
             </p>
           </div>

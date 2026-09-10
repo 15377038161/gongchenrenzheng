@@ -43,6 +43,8 @@ function FormFileInput({
 
   const busy = disabled || uploading;
 
+  // 大尺寸拖拽区：纵向卡片（原单行 42px 高 → 112px+，面积 ≥2.5 倍），
+  // 2px 明显虚线边框 + hover/拖拽时湖蓝描边、上浮与阴影，便于快速识别。
   return (
     <div
       onDragOver={(e) => {
@@ -62,34 +64,41 @@ function FormFileInput({
         type="button"
         disabled={busy}
         onClick={() => inputRef.current?.click()}
-        className={`flex w-full items-center gap-2.5 rounded-[10px] border border-dashed px-3.5 py-2.5 text-left text-[13.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep ${
+        aria-describedby={`fh-${field.id}`}
+        className={`group flex min-h-[112px] w-full flex-col items-center justify-center gap-2 rounded-[14px] border-[2px] border-dashed px-4 py-5 text-center transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep ${
           dragOver
-            ? 'border-lake-deep bg-lake-pale text-lake-deep'
+            ? 'scale-[1.01] border-lake-deep bg-lake-pale text-lake-deep shadow-[0_6px_20px_rgba(58,103,171,0.18)]'
             : status === 'done'
-              ? 'border-lake-soft text-ink'
-              : 'border-lake-soft text-ink-soft hover:border-lake-deep hover:text-lake-deep'
+              ? 'border-lake-deep border-solid bg-lake-pale/60 text-ink hover:shadow-[0_4px_14px_rgba(58,103,171,0.12)]'
+              : 'border-lake-soft bg-white text-ink-soft hover:-translate-y-[2px] hover:border-lake-deep hover:bg-lake-pale/40 hover:text-lake-deep hover:shadow-[0_6px_18px_rgba(58,103,171,0.14)]'
         }`}
       >
-        {/* 状态图标：上传中 spinner / 完成 ✓ / 默认回形针 */}
+        {/* 状态图标：完成 ✓ / 默认大回形针 */}
         <span
           aria-hidden="true"
-          className={`flex h-6 w-6 shrink-0 items-center justify-center text-[13px] ${
-            status === 'done' ? 'text-lake-deep' : 'text-ink-faint'
+          className={`flex h-10 w-10 items-center justify-center rounded-full text-[19px] transition-colors ${
+            status === 'done' ? 'bg-lake-deep text-white' : 'bg-lake-pale text-lake-deep'
           }`}
         >
           {status === 'done' ? (
-            '✓'
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
           ) : (
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
             </svg>
           )}
         </span>
-        <span className="min-w-0 flex-1 truncate">
-          {value ? value.name : field.placeholder || '点击选择或拖拽文件到此处'}
+        {/* 主提示行：文件名（已上传）或操作提示 */}
+        <span className="max-w-full truncate text-[18px] font-medium leading-6">
+          {value ? value.name : dragOver ? '松开鼠标即可上传' : '点击选择文件，或将文件拖拽到此处'}
         </span>
-        <span className="shrink-0 text-[12px] text-ink-faint">
-          {status === 'done' && value ? fmtSize(value.size) : '选择 / 拖拽'}
+        {/* 辅助说明行：已上传显示大小，否则显示占位说明 */}
+        <span id={`fh-${field.id}`} className="text-[15.5px] leading-5 text-ink-faint">
+          {status === 'done' && value
+            ? `已上传 · ${fmtSize(value.size)}`
+            : (field.placeholder || field.title || '支持文档文件，上传后自动交给智能体处理')}
         </span>
       </button>
       <input
@@ -106,8 +115,8 @@ function FormFileInput({
       {/* 拖拽提示条：拖入时可见 */}
       <div
         aria-hidden="true"
-        className={`overflow-hidden text-[11.5px] leading-5 text-lake-deep transition-all duration-200 ${
-          dragOver ? 'mt-1 max-h-5 opacity-100' : 'max-h-0 opacity-0'
+        className={`overflow-hidden text-[15.5px] font-medium leading-6 text-lake-deep transition-all duration-200 ${
+          dragOver ? 'mt-1.5 max-h-6 opacity-100' : 'max-h-0 opacity-0'
         }`}
       >
         松开鼠标即可上传「{field.title || field.name}」
@@ -182,7 +191,7 @@ export function FormCard({
 
   if (submitted) {
     return (
-      <div className="rounded-[14px] border border-hairline bg-white/70 px-4 py-3 text-[13.5px] text-ink-faint">
+      <div className="rounded-[14px] border border-hairline bg-white/70 px-4 py-3 text-[16px] text-ink-faint">
         表单已提交，请查看智能体回复。
       </div>
     );
@@ -190,15 +199,15 @@ export function FormCard({
 
   return (
     <div className="flex flex-col gap-3 rounded-[14px] border border-hairline bg-white px-4 py-4 shadow-sm">
-      <p className="text-[13px] font-medium text-ink-soft">请填写以下信息</p>
+      <p className="text-[15.5px] font-medium text-ink-soft">请填写以下信息</p>
       {form.schema.map((f) => (
         <div key={f.id} className="flex flex-col gap-1.5">
-          <label htmlFor={`ff-${f.id}`} className="text-[13.5px] font-medium text-ink">
+          <label htmlFor={`ff-${f.id}`} className="text-[16px] font-medium text-ink">
             {f.title || f.name}
             {f.required && <span className="ml-1 text-[#c05640]">*</span>}
           </label>
           {f.description ? (
-            <p className="text-[11.5px] leading-5 text-ink-faint">{f.description}</p>
+            <p className="text-[14px] leading-5 text-ink-faint">{f.description}</p>
           ) : null}
           {isFileField(f) ? (
             <FormFileInput
@@ -227,17 +236,17 @@ export function FormCard({
               placeholder={f.placeholder || ''}
               disabled={busy}
               onChange={(e) => setTextValues((prev) => ({ ...prev, [f.name]: e.target.value }))}
-              className="rounded-[10px] border border-hairline bg-white px-3.5 py-2.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-lake-deep focus:shadow-[0_0_0_3px_rgba(58,103,171,0.1)] disabled:opacity-60"
+              className="rounded-[10px] border border-hairline bg-white px-3.5 py-2.5 text-[17px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-lake-deep focus:shadow-[0_0_0_3px_rgba(58,103,171,0.1)] disabled:opacity-60"
             />
           )}
         </div>
       ))}
-      {err && <p className="text-[12.5px] text-[#c05640]">{err}</p>}
+      {err && <p className="text-[15px] text-[#c05640]">{err}</p>}
       <button
         type="button"
         disabled={busy || uploading}
         onClick={() => void submit()}
-        className="mt-1 self-start rounded-[10px] bg-lake-deep px-5 py-2 text-[14px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+        className="mt-1 self-start rounded-[10px] bg-lake-deep px-5 py-2 text-[17px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
       >
         {busy ? '提交中…' : uploading ? '文件上传中…' : '提交表单'}
       </button>
@@ -262,7 +271,7 @@ export function MenuCard({ menu, answered, onPick }: {
   }, [answered, menu.messageId]);
   return (
     <div className="flex flex-col gap-2.5">
-      {menu.question && <p className="text-[13.5px] font-medium text-ink-soft">{menu.question}</p>}
+      {menu.question && <p className="text-[16px] font-medium text-ink-soft">{menu.question}</p>}
       <div className="flex flex-col gap-2">
         {menu.items.map((item) => {
           const chosen = picked === item.content;
@@ -276,7 +285,7 @@ export function MenuCard({ menu, answered, onPick }: {
                 setPicked(item.content);
                 onPick(item.content);
               }}
-              className={`group flex w-full items-center gap-3 rounded-[12px] border px-4 py-[11px] text-left text-[14.5px] transition-all duration-200 disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-lake-deep ${
+              className={`group flex w-full items-center gap-3 rounded-[12px] border px-4 py-[11px] text-left text-[17.5px] transition-all duration-200 disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-lake-deep ${
                 chosen
                   ? 'border-lake-deep border-[1.5px] bg-lake-pale font-medium text-ink shadow-[0_1px_4px_rgba(58,103,171,0.14)]'
                   : answered
@@ -299,7 +308,7 @@ export function MenuCard({ menu, answered, onPick }: {
               </span>
               <span className="min-w-0 flex-1 break-words leading-6">{item.content}</span>
               {chosen && (
-                <span className="shrink-0 text-[12.5px] font-medium text-lake-deep" aria-hidden="true">
+                <span className="shrink-0 text-[15px] font-medium text-lake-deep" aria-hidden="true">
                   ✓ 已选择
                 </span>
               )}
