@@ -1104,7 +1104,7 @@ function App() {
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-11 px-5 py-9">
             {messages.length === 0 && (
-              <div className="flex flex-1 flex-col items-start justify-center gap-5 py-14">
+              <div className="flex min-h-0 flex-1 flex-col items-start justify-end gap-5 pb-4">
                 <p className="text-[15.5px] tracking-[0.2em] text-lake-deep">HUST · 环境科学与工程学院</p>
                 <h2 className="font-serif-sc text-[2.2rem] leading-[1.35] font-semibold text-ink">
                   {PAGE.welcomeTitle}
