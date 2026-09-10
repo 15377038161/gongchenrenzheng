@@ -336,17 +336,41 @@ function openRobotChannel(
   const cleanup = () => clearInterval(heartbeat);
 
   ws.onopen = () => {
+    console.log(`[ws] open conversationId=${session.conversationId}`);
     onOpen((msg) => {
+      const summary = {
+        msgTimeId: msg.msgTimeId,
+        time: msg.time,
+        messageType: msg.messageType,
+        communicateType: msg.communicateType,
+        question:
+          msg.messageType === 'HIDDEN_MESSAGE'
+            ? {
+                messageId: (msg.msg.question as { messageId?: unknown })?.messageId,
+                dataCount: Array.isArray((msg.msg.question as { data?: unknown[] }).data)
+                  ? (msg.msg.question as { data: unknown[] }).data.length
+                  : -1,
+                dataPreview: JSON.stringify((msg.msg.question as { data?: unknown[] }).data)?.slice(0, 600),
+              }
+            : String(msg.msg.question),
+        fileInfoCount: msg.msg.fileInfo.length,
+      };
+      console.log(`[ws] send ${JSON.stringify(summary)}`);
       ws.send(JSON.stringify(msg));
     });
   };
 
-  ws.onerror = () => {
+  // 注：全局 WebSocket 类型无事件命名空间（WebSocket.ErrorEvent 等不可用），
+  // 回调按标准 Event 签名声明，内部用结构化收窄读取错误信息。
+  ws.onerror = (ev: Event) => {
+    const info = ev as { message?: unknown; error?: { constructor?: { name?: string } } };
+    console.error(`[ws] error conversationId=${session.conversationId} message=${JSON.stringify(info.message ?? '')} type=${info.error?.constructor?.name ?? ''}`);
     cleanup();
     finish({ type: 'error', message: '与智能体的连接出现错误，请稍后重试' });
   };
 
-  ws.onclose = () => {
+  ws.onclose = (ev: CloseEvent) => {
+    console.log(`[ws] close conversationId=${session.conversationId} code=${ev.code} reason=${JSON.stringify(ev.reason ?? '')} wasClean=${ev.wasClean}`);
     cleanup();
     if (!settled) {
       finish({ type: 'error', message: '智能体连接已断开，请重新提问' });

@@ -247,7 +247,8 @@ export function FormCard({
 
 /**
  * 智能体菜单选项卡片：点击选项即以该文本作为普通消息重新发送（实测有效协议）。
- * 已回答过（answered）后只读展示。
+ * 视觉对照官网单选交互：卡片化选项 + 左侧单选圆点，选中项湖蓝描边高亮；
+ * 已回答过（answered）后只读展示：选中项保留高亮与「已选择」标记，其余降为中性只读。
  */
 export function MenuCard({ menu, answered, onPick }: {
   menu: RobotMenu;
@@ -260,28 +261,48 @@ export function MenuCard({ menu, answered, onPick }: {
     if (!answered) setPicked('');
   }, [answered, menu.messageId]);
   return (
-    <div className="flex flex-col gap-2">
-      {menu.question && <p className="text-[13.5px] text-ink-soft">{menu.question}</p>}
-      <div className="flex flex-col gap-1.5 rounded-[14px] border border-hairline bg-white/70 p-2.5">
+    <div className="flex flex-col gap-2.5">
+      {menu.question && <p className="text-[13.5px] font-medium text-ink-soft">{menu.question}</p>}
+      <div className="flex flex-col gap-2">
         {menu.items.map((item) => {
-          const chosen = answered || picked === item.content;
+          const chosen = picked === item.content;
           return (
             <button
               key={item.menuId || item.content}
               type="button"
               disabled={answered}
+              aria-pressed={chosen}
               onClick={() => {
                 setPicked(item.content);
                 onPick(item.content);
               }}
-              className={`rounded-[10px] px-3.5 py-2 text-left text-[14px] transition-colors duration-150 disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep ${
+              className={`group flex w-full items-center gap-3 rounded-[12px] border px-4 py-[11px] text-left text-[14.5px] transition-all duration-200 disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-lake-deep ${
                 chosen
-                  ? 'bg-lake-pale text-lake-deep font-medium'
-                  : 'text-ink-soft hover:bg-lake-pale/70 hover:text-lake-deep'
+                  ? 'border-lake-deep border-[1.5px] bg-lake-pale font-medium text-ink shadow-[0_1px_4px_rgba(58,103,171,0.14)]'
+                  : answered
+                    ? 'border-hairline bg-white/60 text-ink-faint'
+                    : 'border-hairline bg-white text-ink-soft hover:-translate-y-[1px] hover:border-lake-soft hover:text-ink hover:shadow-[0_2px_8px_rgba(58,103,171,0.10)]'
               }`}
             >
-              {chosen && <span aria-hidden="true" className="mr-1.5">✓</span>}
-              {item.content}
+              {/* 单选圆点：选中时湖蓝实心 + 白芯；hover 变湖蓝描边 */}
+              <span
+                aria-hidden="true"
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors duration-200 ${
+                  chosen
+                    ? 'border-lake-deep bg-lake-deep'
+                    : answered
+                      ? 'border-hairline bg-transparent'
+                      : 'border-ink-faint/40 bg-white group-hover:border-lake-deep'
+                }`}
+              >
+                {chosen && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
+              </span>
+              <span className="min-w-0 flex-1 break-words leading-6">{item.content}</span>
+              {chosen && (
+                <span className="shrink-0 text-[12.5px] font-medium text-lake-deep" aria-hidden="true">
+                  ✓ 已选择
+                </span>
+              )}
             </button>
           );
         })}

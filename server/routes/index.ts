@@ -157,7 +157,12 @@ router.get('/api/chat/stream', (req, res) => {
   );
 
   // 客户端断开时释放上游连接
-  req.on('close', () => {
+  // 注意用 res.on('close') 而非 req.on('close')：
+  // Node 18+ 中带请求体的请求（如本接口的 JSON body）在 body 读取完成后
+  // req 的 'close' 事件即触发，会在上游 WS 握手阶段就把连接误关掉，
+  // 导致用户看到「与智能体的连接出现错误」。res 'close' 只在连接真正断开
+  // （客户端中断或响应结束）时触发，语义正确。
+  res.on('close', () => {
     handle.close();
   });
 });
@@ -267,7 +272,12 @@ router.post('/api/chat/form', (req, res) => {
     }
   );
 
-  req.on('close', () => {
+  // 注意用 res.on('close') 而非 req.on('close')：
+  // Node 18+ 中带请求体的请求（如本接口的 JSON body）在 body 读取完成后
+  // req 的 'close' 事件即触发，会在上游 WS 握手阶段就把连接误关掉，
+  // 导致用户看到「与智能体的连接出现错误」。res 'close' 只在连接真正断开
+  // （客户端中断或响应结束）时触发，语义正确。
+  res.on('close', () => {
     handle.close();
   });
 });

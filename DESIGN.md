@@ -45,6 +45,14 @@
 - 左侧圆点 16px（hover 变湖蓝）；有序列表带湖蓝序号角标
 - hover：湖蓝描边 + 上浮 1px + 轻阴影；点击作为下一条消息发送
 
+### 智能体菜单卡片（MenuCard，2026-09 对照官网单选交互重做）
+- 选项为独立白底卡片：hairline 描边、12px 圆角、px-4 py-11px、行高 6
+- 左侧 16px 单选圆点：默认空心（ink-faint 描边，hover 湖蓝描边）；选中湖蓝实心 + 白芯
+- 选中态：湖蓝 1.5px 描边 + lake-pale 底 + 湖蓝轻阴影 + 右侧「✓ 已选择」标记
+- 未选中 hover：上浮 1px + lake-soft 描边 + 轻阴影（对齐 MarkdownView 选项卡片）
+- 已回答（answered）：选中项保留高亮，其余降为白 60% 底 + ink-faint 只读
+- 菜单问题文字 13.5px font-medium ink-soft
+
 ### 附件卡片（AttachmentChip）
 - 上传后可见文件名/类型图标/大小，一目了然
 - 白底 10px 圆角卡片：左侧 8×8 图标底（lake-pale）+ MIME 分类 emoji + 文件名截断 + 大小
