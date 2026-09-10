@@ -248,6 +248,8 @@ function App() {
   const [sending, setSending] = useState(false);
   const [activeThought, setActiveThought] = useState('');
   const [loadError, setLoadError] = useState('');
+  /** 历史会话服务不可用（如嵌入第三方门户时 DB 接口异常）：侧栏软提示，不阻塞聊天 */
+  const [historyUnavailable, setHistoryUnavailable] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   /** 待发送附件（仅元数据展示） */
   const [pendingAtts, setPendingAtts] = useState<Attachment[]>([]);
@@ -270,7 +272,8 @@ function App() {
   const robotSessionsRef = useRef<Record<string, RobotSession>>({});
   const recRef = useRef<SpeechRecognitionLike | null>(null);
 
-  /** 初始化：加载会话列表 */
+  /** 初始化：加载会话列表（嵌入第三方门户等场景下 DB 接口可能不可用，
+   * 历史加载失败仅降级为侧栏提示，不阻塞聊天主流程、不弹顶部错误条） */
   useEffect(() => {
     robotSessionsRef.current = loadRobotSessions();
     (async () => {
@@ -278,8 +281,8 @@ function App() {
         const rows = await listConversations();
         setConversations(rows);
         if (rows.length > 0) setActiveId(rows[0].id);
-      } catch (err) {
-        setLoadError(err instanceof Error ? err.message : PAGE.loadFail);
+      } catch {
+        setHistoryUnavailable(true);
       }
     })();
   }, []);
@@ -329,8 +332,12 @@ function App() {
             };
           })
         );
-      } catch (err) {
-        if (!cancelled) setLoadError(err instanceof Error ? err.message : PAGE.loadFail);
+      } catch {
+        // 切换会话的历史加载失败：降级为侧栏软提示，不弹顶部错误条阻塞聊天
+        if (!cancelled) {
+          setHistoryUnavailable(true);
+          setMessages([]);
+        }
       }
     })();
     return () => {
@@ -985,6 +992,11 @@ function App() {
           {PAGE.history}
         </div>
         <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          {historyUnavailable && (
+            <p className="mx-1 rounded-[8px] bg-lake-pale/60 px-3 py-2.5 text-[14px] leading-6 text-ink-soft">
+              历史记录暂时不可用，对话功能不受影响
+            </p>
+          )}
           {conversations.length === 0 && (
             <p className="px-3 py-4 text-[15.5px] leading-6 text-ink-faint">暂无历史会话</p>
           )}
@@ -1204,8 +1216,8 @@ function App() {
           </div>
         </div>
 
-        {/* 输入区：附件上传 + 语音输入 + 文本框 */}
-        <footer className="shrink-0 border-t border-hairline bg-white/70 backdrop-blur-sm">
+        {/* 输入区：附件上传 + 语音输入 + 文本框（透明底融入水彩背景，仅输入胶囊保留白底） */}
+        <footer className="shrink-0">
           <div className="mx-auto w-full max-w-3xl px-5 py-4">
             {/* 待发送附件卡片 */}
             {pendingAtts.length > 0 && (

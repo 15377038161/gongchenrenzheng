@@ -8,6 +8,10 @@ validate = ["bash", "./scripts/validate.sh"]
 deps = ["git"] # -> apt install git
 
 [deploy]
-target = "static"
+# 项目含 Express API 路由（/api/chat/*、/api/db/*），必须以 server 模式部署。
+# 此前误配为 static：静态部署无服务端，页面嵌入门户后 /api/db/* 请求
+# 返回 HTML 错误页，前端解析失败即报「服务响应格式错误」。
+target = "server"
 build = ["bash","./scripts/build.sh"]
+run = ["bash","./scripts/start.sh"]
 deps = ["git"] # -> apt install git
