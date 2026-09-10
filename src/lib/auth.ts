@@ -22,6 +22,26 @@ export interface LoginResult {
   error?: string;
 }
 
+/**
+ * 顶层窗口导航（CRITICAL）：应用可能被嵌入跨域 iframe（平台预览/门户），
+ * 超星授权与 checklogin 中转必须发生在浏览器顶层窗口——iframe 内导航时
+ * 超星域名读不到自身 cookie（第三方 cookie 隔离），静默授权必然失败、拿不到 code。
+ * 跨域 Location 仅开放 assign/replace/href setter，顶层导航合法；
+ * 拿不到顶层窗口（极端沙箱）时兜底当前窗口。
+ */
+function navigateTop(url: string): void {
+  try {
+    const top = window.top;
+    if (top && top !== window) {
+      top.location.assign(url);
+      return;
+    }
+  } catch {
+    console.warn('[auth] 顶层窗口不可访问，降级为当前窗口导航');
+  }
+  window.location.assign(url);
+}
+
 /** 邮箱密码登录（Supabase 原生 Auth，Auth 配置已启用 external_email） */
 export async function loginWithEmail(email: string, password: string): Promise<LoginResult> {
   const { error } = await getSupabase().auth.signInWithPassword({ email, password });
@@ -66,8 +86,8 @@ export async function loginWithChaoxingOAuth(): Promise<LoginResult> {
     return { success: false, error: body.message || `获取授权地址失败 (${res.status})` };
   }
   const { authorizeUrl } = (await res.json()) as { authorizeUrl: string };
-  // 必须顶层导航：fetch 跟随跨域 302 会被 CORS 拦截
-  window.location.assign(authorizeUrl);
+  // 必须顶层导航：fetch 跟随跨域 302 会被 CORS 拦截；iframe 场景下须让超星在顶层读到 cookie
+  navigateTop(authorizeUrl);
   return { success: true };
 }
 
@@ -174,7 +194,8 @@ export async function handleOAuthLoginFlow(): Promise<LoginResult> {
       );
       if (res.ok) {
         const { checkloginUrl } = (await res.json()) as { checkloginUrl: string };
-        window.location.assign(checkloginUrl);
+        // 顶层导航：超星需要在顶层读取浏览器超星 cookie 后回跳
+        navigateTop(checkloginUrl);
         // 页面即将跳转；若返回则视为失败（不应继续，避免 code 在中转未完成时被兑换）
         return { success: false };
       }
