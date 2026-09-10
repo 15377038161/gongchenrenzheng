@@ -128,6 +128,11 @@ router.get('/api/chat/stream', (req, res) => {
     outbound,
     (ev) => {
       switch (ev.type) {
+        case 'session':
+          // FORCE_LOGOUT 自愈：服务端已换全新访客会话重试，新会话下发给前端持久化，
+          // 否则前端缓存仍是被踢的旧会话，后续消息会再次触发 FORCE_LOGOUT
+          writeEvent('session', ev.session);
+          break;
         case 'thought':
           writeEvent('thought', { description: ev.description });
           break;
@@ -245,6 +250,10 @@ router.post('/api/chat/form', (req, res) => {
     safeFields,
     (ev) => {
       switch (ev.type) {
+        case 'session':
+          // FORCE_LOGOUT 自愈：新会话下发给前端持久化（与 stream 路由一致）
+          writeEvent('session', ev.session);
+          break;
         case 'thought':
           writeEvent('thought', { description: ev.description });
           break;

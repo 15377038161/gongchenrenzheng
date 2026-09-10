@@ -655,6 +655,15 @@ function App() {
                 patch((m) => ({ ...m, thoughts: [...m.thoughts, description] }));
                 lastThoughts = [...lastThoughts, description];
               }
+            } else if (eventName === 'session') {
+              // FORCE_LOGOUT 自愈：服务端已换全新会话重发本条消息，本地缓存
+              // MUST 同步替换为下发的新会话，否则后续消息仍携带被踢的旧会话
+              const fresh = JSON.parse(dataRaw) as RobotSession;
+              if (fresh && fresh.visitorId && fresh.visitorVc && fresh.conversationId) {
+                robotSessionsRef.current[convId] = fresh;
+                saveRobotSessions(robotSessionsRef.current);
+                console.info('[chat] 会话已被新窗口占用，已自动切换到新会话');
+              }
             } else if (eventName === 'delta') {
               const { text } = JSON.parse(dataRaw) as { text?: string };
               if (text) {
@@ -855,6 +864,15 @@ function App() {
                 setActiveThought(description);
                 patch((m) => ({ ...m, thoughts: [...m.thoughts, description] }));
                 lastThoughts = [...lastThoughts, description];
+              }
+            } else if (eventName === 'session') {
+              // FORCE_LOGOUT 自愈：服务端已换全新会话重发本条消息，本地缓存
+              // MUST 同步替换为下发的新会话，否则后续消息仍携带被踢的旧会话
+              const fresh = JSON.parse(dataRaw) as RobotSession;
+              if (fresh && fresh.visitorId && fresh.visitorVc && fresh.conversationId) {
+                robotSessionsRef.current[convId] = fresh;
+                saveRobotSessions(robotSessionsRef.current);
+                console.info('[chat] 会话已被新窗口占用，已自动切换到新会话');
               }
             } else if (eventName === 'delta') {
               const { text } = JSON.parse(dataRaw) as { text?: string };

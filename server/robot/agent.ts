@@ -59,6 +59,16 @@ export type RobotEvent =
   | { type: 'form'; form: RobotForm }
   | { type: 'menu'; menu: RobotMenu };
 
+/**
+ * 会话恢复事件：会话被超星强制踢出（FORCE_LOGOUT，同一 conversation 在新窗口打开）
+ * 后服务端自动申请全新访客会话重试，并通过该事件把新会话下发给调用方，
+ * 前端 MUST 持久化新会话替换旧缓存，否则后续消息仍携带被踢的旧会话。
+ */
+export type RobotSessionEvent = { type: 'session'; session: RobotSession };
+
+/** 会话通道完整事件流（业务事件 + 会话恢复事件） */
+export type RobotStreamEvent = RobotEvent | RobotSessionEvent;
+
 /** 超星 WS 原始消息的宽松类型 */
 interface RobotWsMessage {
   type?: string;
@@ -66,6 +76,7 @@ interface RobotWsMessage {
   meta?: { description?: string };
   answer?: string;
   answerType?: string;
+  communicateType?: string;
   systemMsg?: boolean;
   sseStop?: boolean;
   messageId?: string;
@@ -291,53 +302,74 @@ function processDownstream(
 
 /**
  * 建立智能体 WS 通道（chatOnce / submitForm 共用）：
- * 含 75 秒空闲超时兜底与 25 秒心跳，onOpen 回调负责发送首条消息。
+ * 含 75 秒空闲超时兜底与 25 秒心跳；消息体由 buildMessage 工厂按会话生成。
+ *
+ * FORCE_LOGOUT 自愈（CRITICAL）：同一 conversation 被超星判定「已在其他窗口打开」时，
+ * 上游会下发 communicateType=FORCE_LOGOUT 并以 reason=FORCE_LOGOUT 关闭连接。
+ * 服务端自动申请全新访客会话，经 'session' 事件下发给调用方（前端 MUST 持久化新会话），
+ * 随后用新会话重发原始消息，最多重试一次（防循环）。
  */
 function openRobotChannel(
   session: RobotSession,
-  onEvent: (event: RobotEvent) => void,
-  onOpen: (send: (msg: OutgoingMessage) => void) => void
+  onEvent: (event: RobotStreamEvent) => void,
+  buildMessage: () => OutgoingMessage
 ): { close: () => void } {
-  const wsUrl =
-    `${ROBOT_ORIGIN.replace('https', 'wss')}/v1/ws/chat/${UNIT_ID}/visitor` +
-    `?userId=${session.visitorId}&channel=WEB&conversationId=${session.conversationId}` +
-    `&robotId=${ROBOT_ID}&visitorVc=${session.visitorVc}&scene=&lang=zh&isLLMPlanning=0`;
+  // FORCE_LOGOUT 自愈状态：是否已用新会话重试过（只重试一次，防循环）
+  let retriedOnLogout = false;
+  // 客户端主动关闭标记：此时不触发自愈重连
+  let closedByClient = false;
+  // 当前活跃连接的清理句柄（FORCE_LOGOUT 换新会话时整体替换）
+  let activeCleanup: (() => void) | null = null;
 
-  let settled = false;
-  let ws: WebSocket;
-  try {
-    ws = new WebSocket(wsUrl);
-  } catch (err) {
-    onEvent({ type: 'error', message: err instanceof Error ? err.message : '连接智能体失败' });
-    return { close: () => undefined };
-  }
+  const connect = (sess: RobotSession): void => {
+    const wsUrl =
+      `${ROBOT_ORIGIN.replace('https', 'wss')}/v1/ws/chat/${UNIT_ID}/visitor` +
+      `?userId=${sess.visitorId}&channel=WEB&conversationId=${sess.conversationId}` +
+      `&robotId=${ROBOT_ID}&visitorVc=${sess.visitorVc}&scene=&lang=zh&isLLMPlanning=0`;
 
-  const finish = (event: RobotEvent) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(idleTimer);
-    onEvent(event);
-    try { ws.close(); } catch { /* 忽略关闭异常 */ }
-  };
-
-  // 空闲超时兜底：上游 WS 打开但静默不回（如会话过期）时，保证流一定会结束，
-  // 避免前端 SSE 永久挂起导致界面卡死。每收到下行消息即重置。
-  const IDLE_LIMIT_MS = 75_000;
-  const idleTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
-    finish({ type: 'error', message: '智能体长时间无响应（可能是会话已过期），请重新发送' });
-  }, IDLE_LIMIT_MS);
-
-  const heartbeat = setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'KEEPALIVE' }));
+    let settled = false;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (err) {
+      onEvent({ type: 'error', message: err instanceof Error ? err.message : '连接智能体失败' });
+      return;
     }
-  }, 25000);
 
-  const cleanup = () => clearInterval(heartbeat);
+    const finish = (event: RobotEvent) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(idleTimer);
+      onEvent(event);
+      try { ws.close(); } catch { /* 忽略关闭异常 */ }
+    };
 
-  ws.onopen = () => {
-    console.log(`[ws] open conversationId=${session.conversationId}`);
-    onOpen((msg) => {
+    // 空闲超时兜底：上游 WS 打开但静默不回（如会话过期）时，保证流一定会结束，
+    // 避免前端 SSE 永久挂起导致界面卡死。每收到下行消息即重置。
+    const IDLE_LIMIT_MS = 75_000;
+    const idleTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+      finish({ type: 'error', message: '智能体长时间无响应（可能是会话已过期），请重新发送' });
+    }, IDLE_LIMIT_MS);
+
+    const heartbeat = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'KEEPALIVE' }));
+      }
+    }, 25000);
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      clearTimeout(idleTimer);
+    };
+
+    activeCleanup = () => {
+      cleanup();
+      try { ws.close(); } catch { /* 忽略关闭异常 */ }
+    };
+
+    ws.onopen = () => {
+      console.log(`[ws] open conversationId=${sess.conversationId}`);
+      const msg = buildMessage();
       const summary = {
         msgTimeId: msg.msgTimeId,
         time: msg.time,
@@ -357,55 +389,78 @@ function openRobotChannel(
       };
       console.log(`[ws] send ${JSON.stringify(summary)}`);
       ws.send(JSON.stringify(msg));
-    });
+    };
+
+    // 注：全局 WebSocket 类型无事件命名空间（WebSocket.ErrorEvent 等不可用），
+    // 回调按标准 Event 签名声明，内部用结构化收窄读取错误信息。
+    ws.onerror = (ev: Event) => {
+      const info = ev as { message?: unknown; error?: { constructor?: { name?: string } } };
+      console.error(`[ws] error conversationId=${sess.conversationId} message=${JSON.stringify(info.message ?? '')} type=${info.error?.constructor?.name ?? ''}`);
+      cleanup();
+      finish({ type: 'error', message: '与智能体的连接出现错误，请稍后重试' });
+    };
+
+    ws.onclose = (ev: CloseEvent) => {
+      console.log(`[ws] close conversationId=${sess.conversationId} code=${ev.code} reason=${JSON.stringify(ev.reason ?? '')} wasClean=${ev.wasClean}`);
+      cleanup();
+      // FORCE_LOGOUT：会话被新窗口占用而强制踢出 → 换全新会话重发原消息（一次）
+      if (ev.reason === 'FORCE_LOGOUT' && !settled && !retriedOnLogout && !closedByClient) {
+        retriedOnLogout = true;
+        console.log('[ws] FORCE_LOGOUT 检测到会话被踢，自动换新会话重试');
+        void retryWithFreshSession();
+        return;
+      }
+      if (!settled) {
+        finish({ type: 'error', message: '智能体连接已断开，请重新提问' });
+      }
+    };
+
+    ws.onmessage = (ev: MessageEvent) => {
+      // 收到任何下行消息即视为链路活跃，重置空闲超时
+      idleTimer.refresh();
+      processDownstream(String(ev.data), onEvent, finish);
+    };
   };
 
-  // 注：全局 WebSocket 类型无事件命名空间（WebSocket.ErrorEvent 等不可用），
-  // 回调按标准 Event 签名声明，内部用结构化收窄读取错误信息。
-  ws.onerror = (ev: Event) => {
-    const info = ev as { message?: unknown; error?: { constructor?: { name?: string } } };
-    console.error(`[ws] error conversationId=${session.conversationId} message=${JSON.stringify(info.message ?? '')} type=${info.error?.constructor?.name ?? ''}`);
-    cleanup();
-    finish({ type: 'error', message: '与智能体的连接出现错误，请稍后重试' });
-  };
-
-  ws.onclose = (ev: CloseEvent) => {
-    console.log(`[ws] close conversationId=${session.conversationId} code=${ev.code} reason=${JSON.stringify(ev.reason ?? '')} wasClean=${ev.wasClean}`);
-    cleanup();
-    if (!settled) {
-      finish({ type: 'error', message: '智能体连接已断开，请重新提问' });
+  /** FORCE_LOGOUT 自愈：申请全新访客会话 → 通知调用方 → 用新会话重连重发 */
+  const retryWithFreshSession = async (): Promise<void> => {
+    try {
+      const fresh = await applySession();
+      console.log(`[ws] FORCE_LOGOUT 自愈：新会话 conversationId=${fresh.conversationId}`);
+      onEvent({ type: 'session', session: fresh });
+      connect(fresh);
+    } catch (err) {
+      onEvent({
+        type: 'error',
+        message: err instanceof Error ? err.message : '会话恢复失败，请重新发送',
+      });
     }
   };
 
-  ws.onmessage = (ev: MessageEvent) => {
-    // 收到任何下行消息即视为链路活跃，重置空闲超时
-    idleTimer.refresh();
-    processDownstream(String(ev.data), onEvent, finish);
-  };
+  connect(session);
 
   return {
     close: () => {
-      cleanup();
-      clearTimeout(idleTimer);
-      try { ws.close(); } catch { /* 忽略关闭异常 */ }
+      closedByClient = true;
+      activeCleanup?.();
     },
   };
 }
 
 /**
  * 与智能体建立一次对话：连接 WS、发送问题、把下行消息转换为事件流。
- * onEvent 收到 'final' / 'error' / 'form' / 'menu' 后结束。
+ * onEvent 收到 'final' / 'error' / 'form' / 'menu' 后结束；'session' 为会话恢复通知。
  * @param fileInfo 上传文件列表（来自 uploadFile），智能体将读取文档内容
  */
 export function chatOnce(
   session: RobotSession,
   question: string,
-  onEvent: (event: RobotEvent) => void,
+  onEvent: (event: RobotStreamEvent) => void,
   fileInfo: RobotFileInfo[] = []
 ): { close: () => void } {
-  return openRobotChannel(session, onEvent, (send) => {
+  return openRobotChannel(session, onEvent, () => {
     const now = Date.now();
-    send({
+    return {
       msgTimeId: now,
       time: now,
       direction: 'IN',
@@ -423,7 +478,7 @@ export function chatOnce(
       robot: { type: '', scene: -1, extend: '', subject: '', spage: 1 },
       dxNumber: '',
       d: '',
-    });
+    };
   });
 }
 
@@ -438,11 +493,11 @@ export function submitForm(
   session: RobotSession,
   messageId: string,
   fields: RobotFormFieldValue[],
-  onEvent: (event: RobotEvent) => void
+  onEvent: (event: RobotStreamEvent) => void
 ): { close: () => void } {
-  return openRobotChannel(session, onEvent, (send) => {
+  return openRobotChannel(session, onEvent, () => {
     const now = Date.now();
-    send({
+    return {
       msgTimeId: now,
       time: now,
       direction: 'IN',
@@ -460,6 +515,6 @@ export function submitForm(
       robot: { type: '', scene: -1, extend: '', subject: '', spage: 1 },
       dxNumber: '',
       d: '',
-    });
+    };
   });
 }
