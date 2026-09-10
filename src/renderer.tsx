@@ -290,10 +290,19 @@ function App() {
     };
   }, []);
 
+  /** 跳过一次 activeId 加载：程序化新建会话（send/onPickFiles）时，
+   * 消息尚未入库，加载 effect 的空结果会覆盖刚插入的本地消息（首条消息消失的根因） */
+  const skipLoadRef = useRef<string | null>(null);
+
   /** 切换会话：加载消息 */
   useEffect(() => {
     if (!activeId) {
       setMessages([]);
+      return;
+    }
+    // 程序化新建的会话：跳过本次加载（本地消息即将插入，避免空列表覆盖）
+    if (skipLoadRef.current === activeId) {
+      skipLoadRef.current = null;
       return;
     }
     let cancelled = false;
@@ -433,6 +442,7 @@ function App() {
           convTitle = q.slice(0, 24);
           await updateConversationTitle(row.id, convTitle);
           setConversations((prev) => [{ ...row, title: convTitle ?? row.title }, ...prev]);
+          skipLoadRef.current = row.id; // 跳过加载 effect：消息尚未入库，避免空列表覆盖本地消息
           setActiveId(row.id);
         } catch (err) {
           setLoadError(err instanceof Error ? err.message : '新建会话失败');
@@ -839,6 +849,7 @@ function App() {
           const row = await createConversation('材料读取');
           convId = row.id;
           setConversations((prev) => [row, ...prev]);
+          skipLoadRef.current = row.id; // 跳过加载 effect：会话为空，避免覆盖待插入的本地状态
           setActiveId(row.id);
         }
         const robot = await ensureRobotSession(convId);
