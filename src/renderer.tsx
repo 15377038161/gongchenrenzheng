@@ -4,11 +4,10 @@ import { MarkdownView } from './components/MarkdownView';
 import { AgentProgress } from './components/AgentProgress';
 import { BackgroundEffect } from './components/BackgroundEffect';
 import { FormCard, MenuCard } from './components/RobotCards';
-import { LoginOverlay } from './components/LoginOverlay';
 import type { RobotForm, RobotMenu } from './lib/robot-types';
 import { fmtSize } from './components/fmt';
 import { getSupabase } from './lib/supabase';
-import { handleOAuthLoginFlow, logout } from './lib/auth';
+import { handleOAuthLoginFlow, loginWithChaoxingOAuth, logout } from './lib/auth';
 import {
   type Attachment,
   type ConversationRow,
@@ -272,13 +271,13 @@ function App() {
   /** 交互降感：输入聚焦/滚动聊天时降低背景动态层透明度 40% */
   const [bgDimmed, setBgDimmed] = useState(false);
 
-  /* ===== 登录态管理 ===== */
+  /* ===== 登录态管理（右上角入口，不强制登录） ===== */
   /** 登录用户：null 未登录/未知，undefined 表示会话检查中 */
   const [authUser, setAuthUser] = useState<{
     name: string;
     email: string;
   } | null | undefined>(undefined);
-  /** OAuth 回跳在途（checklogin 中转/exchange 进行中），登录层显示过渡态 */
+  /** OAuth 回跳在途（checklogin 中转/exchange 进行中），右上角按钮显示过渡态 */
   const [oauthRelaying, setOauthRelaying] = useState(false);
 
   const listRef = useRef<HTMLDivElement>(null);
@@ -287,21 +286,34 @@ function App() {
   const robotSessionsRef = useRef<Record<string, RobotSession>>({});
   const recRef = useRef<SpeechRecognitionLike | null>(null);
 
-  /** 登录态初始化 + OAuth 回跳闭环：
+  /** 登录态初始化 + OAuth 回跳闭环 + 会话变化监听：
    * 1. URL 带 code（超星授权回跳）→ handleOAuthLoginFlow 编排 checklogin 中转与 exchange 兑换
-   * 2. 已有 session（本系统邮箱登录/OAuth 已建立）→ 直接读取用户
-   * 3. 均无 → 未登录，渲染 LoginOverlay 独立登录入口 */
+   * 2. onAuthStateChange 监听 session 变化（OAuth 兑换 setSession / 登出），自动刷新右上角登录态
+   * 3. 初始检查既有 session；无则未登录——页面正常可用，仅右上角显示登录入口按钮 */
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      // OAuth 回跳在途标记：中转/exchange 期间登录层显示过渡态，不闪错误
-      const relayed = sessionStorage.getItem('cx_checklogin_relay') === '1';
-      const hasCode = new URLSearchParams(window.location.search).has('code');
-      if (relayed || hasCode) setOauthRelaying(true);
 
+    // OAuth 回跳在途标记：中转/exchange 期间右上角显示过渡态
+    const relayed = sessionStorage.getItem('cx_checklogin_relay') === '1';
+    const hasCode = new URLSearchParams(window.location.search).has('code');
+    if (relayed || hasCode) setOauthRelaying(true);
+
+    // session 变化监听：OAuth 兑换 / 登出都会触发，统一刷新 authUser
+    const { data: authListener } = getSupabase().auth.onAuthStateChange((_event, session) => {
+      if (cancelled) return;
+      setAuthUser(
+        session?.user
+          ? { name: displayName(session.user), email: session.user.email ?? '' }
+          : null
+      );
+      setOauthRelaying(false);
+    });
+
+    (async () => {
       const result = await handleOAuthLoginFlow();
       if (cancelled) return;
       if (result.success) {
+        // 兑换完成：onAuthStateChange 已刷新 authUser，这里兜底读取一次
         const {
           data: { user },
         } = await getSupabase().auth.getUser();
@@ -311,33 +323,39 @@ function App() {
         }
         return;
       }
-      // 无 code 或兑换失败：检查既有 session（邮箱登录）
+      // 无 code 或兑换失败：检查既有 session（本系统邮箱登录/OAuth 已建立）
       const {
         data: { session },
       } = await getSupabase().auth.getSession();
       if (cancelled) return;
-      if (session?.user) {
-        setAuthUser({
-          name: displayName(session.user),
-          email: session.user.email ?? '',
-        });
-      } else {
-        setAuthUser(null);
-      }
+      setAuthUser(
+        session?.user
+          ? { name: displayName(session.user), email: session.user.email ?? '' }
+          : null
+      );
       setOauthRelaying(false);
     })();
+
     return () => {
       cancelled = true;
+      authListener.subscription.unsubscribe();
     };
   }, []);
 
-  /** 登出：清除 session，回到登录覆盖层 */
+  /** 右上角一键登录：跳转超星授权页（门户已登录用户静默完成） */
+  const handleLogin = useCallback(async () => {
+    const result = await loginWithChaoxingOAuth();
+    if (!result.success) {
+      setLoadError(result.error || '跳转授权页失败');
+    }
+    // 成功时页面即将顶层跳转，无需后续处理
+  }, []);
+
+  /** 登出：清除 session，右上角回到登录入口 */
   const handleLogout = useCallback(async () => {
     if (!window.confirm('确定退出登录？')) return;
     await logout();
     setAuthUser(null);
-    setMessages([]);
-    setActiveId(null);
   }, []);
 
   /** 初始化：加载会话列表（嵌入第三方门户等场景下 DB 接口可能不可用，
@@ -1014,9 +1032,6 @@ function App() {
     <div className="relative flex h-full min-h-screen">
       <BackgroundEffect enabled={true} dimmed={bgDimmed} />
 
-      {/* 未登录：登录覆盖层（OAuth 在途时显示过渡态，会话检查中不渲染避免闪屏） */}
-      {authUser === null && <LoginOverlay relaying={oauthRelaying} />}
-
       {/* 移动端遮罩 */}
       {sidebarOpen && (
         <button
@@ -1142,9 +1157,56 @@ function App() {
             </button>
             <h1 className="truncate text-[18px] font-medium text-ink">{activeTitle}</h1>
           </div>
-          <div className="flex items-center gap-2 text-[15px] text-ink-faint">
-            <span aria-hidden="true" className="h-1.5 w-1.5 animate-pulse rounded-full bg-lake-deep" />
-            在线
+          <div className="flex min-w-0 items-center gap-2.5 text-[15px] text-ink-faint">
+            <span aria-hidden="true" className="hidden h-1.5 w-1.5 animate-pulse rounded-full bg-lake-deep sm:block" />
+            <span className="hidden sm:block">在线</span>
+
+            {/* 右上角登录入口：未登录一键登录 / 已登录用户名+退出 */}
+            {oauthRelaying ? (
+              <button
+                type="button"
+                disabled
+                className="flex h-9 items-center gap-1.5 rounded-[10px] border border-hairline bg-white px-3 text-[15px] text-ink-soft"
+              >
+                <span
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-hairline border-t-lake-deep"
+                />
+                登录中…
+              </button>
+            ) : authUser ? (
+              <div className="flex items-center gap-2">
+                <span className="hidden min-w-0 items-center gap-1.5 md:flex">
+                  <span
+                    aria-hidden="true"
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-lake-deep text-[12px] font-medium text-white"
+                  >
+                    {authUser.name.slice(0, 1)}
+                  </span>
+                  <span className="max-w-[120px] truncate text-[14.5px] text-ink-soft">{authUser.name}</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void handleLogout()}
+                  className="flex h-9 items-center rounded-[10px] border border-hairline bg-white px-3 text-[15px] text-ink-soft transition-colors duration-200 hover:border-lake-deep hover:text-lake-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+                >
+                  退出
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleLogin()}
+                className="flex h-9 items-center gap-1.5 rounded-[10px] bg-lake-deep px-3.5 text-[15px] font-medium text-white transition-all duration-200 hover:scale-[1.03] hover:bg-[#2f5689] hover:shadow-[0_2px_10px_rgba(58,103,171,0.3)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4" />
+                  <path d="M10 17l5-5-5-5" />
+                  <path d="M15 12H3" />
+                </svg>
+                超星一键登录
+              </button>
+            )}
           </div>
         </header>
 
