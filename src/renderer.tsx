@@ -84,7 +84,7 @@ const PAGE = {
   welcomeDesc:
     '上传工程认证材料文档，智能体自动提取文档内容，可按章节（如 1.1、1.2、2.1）读取并细分选择章节内容。',
   agentLabel: '工程认证',
-  placeholder: '输入问题或章节号（如 1.1），Enter 发送，Shift+Enter 换行',
+  placeholder: '请输入工程认证相关问题，或直接输入章节号（如 1.1）读取文档内容，Enter 发送',
   deleteLabel: '删除',
   confirmDelete: '确定删除该会话？',
   footer: '内容由 AI 生成，仅供参考',
@@ -1217,11 +1217,12 @@ function App() {
         </div>
 
         {/* 输入区：附件上传 + 语音输入 + 文本框（透明底融入水彩背景，仅输入胶囊保留白底）
-            空白对话页：输入框抬升至垂直居中偏下（约 62%~66% 视口高度），不遮挡顶部欢迎文案；
-            活跃对话后：下边距归零，吸附底部。通过 margin-bottom 过渡实现平滑位移，兼容各分辨率 */}
+            空白对话页：输入框抬升至垂直方向 25% 定位点（视口 75vh 处，即页高 3/4 中间偏下），
+            欢迎区同步下沉贴住其上方组成整体，无遮挡、排布清晰；
+            活跃对话后：下边距归零，吸附页面底部边缘。通过 margin-bottom 过渡实现平滑位移，兼容各分辨率 */}
         <footer
           className={`shrink-0 transition-[margin] duration-500 ease-[cubic-bezier(0.32,0.72,0.22,1)] motion-reduce:transition-none ${
-            messages.length === 0 ? 'mb-[max(24px,calc(62vh-160px))]' : 'mb-0'
+            messages.length === 0 ? 'mb-[max(24px,calc(75vh-160px))]' : 'mb-0'
           }`}
         >
           <div className="mx-auto w-full max-w-3xl px-5 py-4">
