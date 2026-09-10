@@ -56,6 +56,7 @@ export async function logout(): Promise<LoginResult> {
 export async function loginWithChaoxingOAuth(): Promise<LoginResult> {
   // redirect_uri 固定为当前页面完整 URL，授权后原路回跳
   const redirectUri = window.location.href.split('#')[0];
+  console.info('[auth] 获取授权地址 redirect_uri=', redirectUri);
   const res = await fetch(
     `${AUTH_BASE}/v1/api/coder/proxy/auth/chaoxing-oauth/authorize-url?redirect_uri=${encodeURIComponent(redirectUri)}`,
     { headers: AUTH_HEADERS }
@@ -100,6 +101,7 @@ async function doHandleOAuthCallback(): Promise<LoginResult> {
  * userinfo（中转回跳的 AES 密文，可选）随请求体提交，服务端在兑换前内部解密并暂存凭证。
  */
 async function doExchange(code: string, userinfo?: string): Promise<LoginResult> {
+  console.info('[auth] 开始 exchange 兑换', userinfo ? '（携带 userinfo 密文）' : '（无 userinfo）');
   const res = await fetch(`${AUTH_BASE}/v1/api/coder/proxy/auth/chaoxing-oauth/exchange`, {
     method: 'POST',
     headers: AUTH_HEADERS,
@@ -108,6 +110,7 @@ async function doExchange(code: string, userinfo?: string): Promise<LoginResult>
 
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { message?: string };
+    console.warn('[auth] exchange 失败 status=', res.status, 'message=', body.message);
     // code 一次性且短时效：失败后清掉 URL 参数，提示用户重新发起登录
     cleanOAuthParamsFromUrl();
     return { success: false, error: body.message || '登录链接已失效，请重新登录' };
@@ -119,10 +122,12 @@ async function doExchange(code: string, userinfo?: string): Promise<LoginResult>
     refresh_token: session.refresh_token,
   });
   if (error) {
+    console.warn('[auth] setSession 失败:', error.message);
     cleanOAuthParamsFromUrl();
     return { success: false, error: error.message };
   }
 
+  console.info('[auth] exchange 兑换成功，session 已建立');
   // 登录成功：清掉 URL 上的 code/state，避免刷新重放
   cleanOAuthParamsFromUrl();
   return { success: true };
@@ -154,6 +159,7 @@ export async function handleOAuthLoginFlow(): Promise<LoginResult> {
   const code = params.get('code');
   const userinfo = params.get('userinfo');
   const relayed = sessionStorage.getItem(CX_RELAY_KEY) === '1';
+  console.info('[auth] 登录闭环入口', { hasCode: !!code, hasUserinfo: !!userinfo, relayed });
 
   // 首次拿到 code 且未中转：暂存 code、清理 URL，立即中转（time 有时效，取得地址后不得缓存）
   if (code && !relayed) {

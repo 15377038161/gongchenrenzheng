@@ -321,6 +321,11 @@ function App() {
         return;
       }
       // 无 code 或兑换失败：检查既有 session（本系统邮箱登录/OAuth 已建立）
+      // 兑换失败（code 失效/交换异常）时上浮错误提示，避免“页面闪一下”无感知
+      if (result.error) {
+        console.warn('[auth] OAuth 回跳处理失败:', result.error);
+        setLoadError(result.error);
+      }
       const {
         data: { session },
       } = await getSupabase().auth.getSession();
