@@ -1100,9 +1100,10 @@ function App() {
           </div>
         )}
 
-        {/* 消息流：消息块之间 44px 大留白，问答分组清晰（适老化） */}
+        {/* 消息流：消息块之间 44px 大留白，问答分组清晰（适老化）
+            空白页时内层撑满滚动区最小高度，使欢迎区 justify-end 下沉贴住抬升后的输入框上方 */}
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-11 px-5 py-9">
+          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-11 px-5 py-9">
             {messages.length === 0 && (
               <div className="flex min-h-0 flex-1 flex-col items-start justify-end gap-5 pb-4">
                 <p className="text-[15.5px] tracking-[0.2em] text-lake-deep">HUST · 环境科学与工程学院</p>
@@ -1217,12 +1218,12 @@ function App() {
         </div>
 
         {/* 输入区：附件上传 + 语音输入 + 文本框（透明底融入水彩背景，仅输入胶囊保留白底）
-            空白对话页：输入框抬升至垂直方向 25% 定位点（视口 75vh 处，即页高 3/4 中间偏下），
+            空白对话页：输入框底部距页面底边约 25vh（即页面垂直 75% 处，中间偏下定位），
             欢迎区同步下沉贴住其上方组成整体，无遮挡、排布清晰；
-            活跃对话后：下边距归零，吸附页面底部边缘。通过 margin-bottom 过渡实现平滑位移，兼容各分辨率 */}
+            活跃对话后：下边距归零，贴合页面底部边缘。通过 margin-bottom 过渡实现平滑位移，兼容各分辨率 */}
         <footer
           className={`shrink-0 transition-[margin] duration-500 ease-[cubic-bezier(0.32,0.72,0.22,1)] motion-reduce:transition-none ${
-            messages.length === 0 ? 'mb-[max(24px,calc(75vh-160px))]' : 'mb-0'
+            messages.length === 0 ? 'mb-[25vh]' : 'mb-0'
           }`}
         >
           <div className="mx-auto w-full max-w-3xl px-5 py-4">
