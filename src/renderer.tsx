@@ -1216,8 +1216,14 @@ function App() {
           </div>
         </div>
 
-        {/* 输入区：附件上传 + 语音输入 + 文本框（透明底融入水彩背景，仅输入胶囊保留白底） */}
-        <footer className="shrink-0">
+        {/* 输入区：附件上传 + 语音输入 + 文本框（透明底融入水彩背景，仅输入胶囊保留白底）
+            空白对话页：输入框抬升至垂直居中偏下（约 62%~66% 视口高度），不遮挡顶部欢迎文案；
+            活跃对话后：下边距归零，吸附底部。通过 margin-bottom 过渡实现平滑位移，兼容各分辨率 */}
+        <footer
+          className={`shrink-0 transition-[margin] duration-500 ease-[cubic-bezier(0.32,0.72,0.22,1)] motion-reduce:transition-none ${
+            messages.length === 0 ? 'mb-[max(24px,calc(62vh-160px))]' : 'mb-0'
+          }`}
+        >
           <div className="mx-auto w-full max-w-3xl px-5 py-4">
             {/* 待发送附件卡片 */}
             {pendingAtts.length > 0 && (
