@@ -84,7 +84,7 @@ const PAGE = {
   welcomeDesc:
     '上传工程认证材料文档，智能体自动提取文档内容，可按章节（如 1.1、1.2、2.1）读取并细分选择章节内容。',
   agentLabel: '工程认证',
-  placeholder: '请输入工程认证相关问题，或直接输入章节号（如 1.1）读取文档内容，Enter 发送',
+  placeholder: '请输入工程认证相关问题',
   deleteLabel: '删除',
   confirmDelete: '确定删除该会话？',
   footer: '内容由 AI 生成，仅供参考',
