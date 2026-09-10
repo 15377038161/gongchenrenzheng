@@ -470,7 +470,8 @@ function App() {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+    // 与 textarea 的 max-h-[180px] 保持一致，避免增长上限不一致导致提前出现滚动条
+    ta.style.height = Math.min(ta.scrollHeight, 180) + 'px';
   }, []);
 
   /** 获取（或申请）某个本地对话对应的智能体会话 */
@@ -1362,7 +1363,7 @@ function App() {
               </div>
             )}
 
-            <div className="flex items-end gap-2.5 rounded-[16px] border border-hairline bg-white px-3.5 py-3 shadow-[0_2px_12px_rgba(27,39,51,0.06)] transition-all duration-200 focus-within:border-lake-deep focus-within:shadow-[0_0_0_3px_rgba(58,103,171,0.12),0_4px_16px_rgba(58,103,171,0.10)]">
+            <div className="flex items-center gap-2.5 rounded-[16px] border border-hairline bg-white px-3.5 py-3 shadow-[0_2px_12px_rgba(27,39,51,0.06)] transition-all duration-200 focus-within:border-lake-deep focus-within:shadow-[0_0_0_3px_rgba(58,103,171,0.12),0_4px_16px_rgba(58,103,171,0.10)]">
               {/* 上传文件 */}
               <input
                 ref={fileRef}
@@ -1418,14 +1419,14 @@ function App() {
                 rows={1}
                 placeholder={listening ? '正在聆听，请说话…' : PAGE.placeholder}
                 disabled={sending}
-                className="max-h-[180px] min-h-[44px] flex-1 resize-none bg-transparent px-1.5 text-[18px] leading-[1.7] text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
+                className="max-h-[180px] min-h-[44px] flex-1 resize-none bg-transparent px-2 py-[6px] text-[18px] leading-[32px] text-ink outline-none placeholder:text-ink-faint placeholder:leading-[32px] disabled:opacity-60"
               />
 
               <button
                 type="button"
                 disabled={!canSend}
                 onClick={() => void send(input, pendingAtts)}
-                className="shrink-0 rounded-[12px] bg-lake-deep px-6 py-2.5 text-[19px] font-medium text-white transition-all duration-200 hover:scale-[1.03] hover:bg-[#2f5689] hover:shadow-[0_4px_12px_rgba(58,103,171,0.3)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+                className="flex h-11 shrink-0 items-center justify-center rounded-[12px] bg-lake-deep px-6 text-[19px] font-medium text-white transition-all duration-200 hover:scale-[1.03] hover:bg-[#2f5689] hover:shadow-[0_4px_12px_rgba(58,103,171,0.3)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
               >
                 发送
               </button>
