@@ -10,6 +10,11 @@ import {
 } from '../robot/agent';
 import { requireAuthedUser } from '../auth/guard';
 import dbRouter from './db';
+import {
+  ACCOUNT_CHANNEL_REQUIRED_CODE,
+  buildChaoxingAccountTaskflowUrl,
+  requiresChaoxingAccountChannel,
+} from '../../shared/chaoxing-account-channel';
 
 const router = Router();
 
@@ -30,7 +35,7 @@ router.use('/api/chat', async (req, res, next) => {
     return;
   }
   // 请求关联用户身份：供内容审核/审计与日志追踪
-  console.log(`[chat-auth] uid=${user.uid} realname=${user.realname} ${req.method} ${req.baseUrl}${req.path}`);
+  console.log(`[chat-auth] user=${user.uid.slice(0, 8)} ${req.method} ${req.baseUrl}${req.path}`);
   next();
 });
 
@@ -96,18 +101,6 @@ router.get('/api/chat/stream', (req, res) => {
     return;
   }
 
-  // 触发词归一化：超星智能体的意图路由按精确措辞分流——
-  // 「撰写工程认证」等近似表述会落入知识库问答分支（返回长文本），
-  // 而「帮我编写工程认证」才能命中任务流并下发 FORM 表单。此处把撰写类
-  // 触发词统一改写为已实测可触发任务流的规范短语，保证用户输入即可拿到表单。
-  const TRIGGER_CANONICAL = '帮我编写工程认证';
-  const TRIGGER_PATTERN = /^(帮我|请帮我|麻烦)?(撰写|编写|写|做)(一份)?工程(教育)?认证(报告|材料|自评报告)?$/;
-  let outbound = q;
-  if (TRIGGER_PATTERN.test(q)) {
-    outbound = TRIGGER_CANONICAL;
-    console.log(`[chat] trigger normalized: "${q}" -> "${TRIGGER_CANONICAL}"`);
-  }
-
   // 随消息携带的已上传文件（JSON：[{objectId,filename,type,fileSize}]）
   let fileInfo: RobotFileInfo[] = [];
   const rawFiles = String(req.query.files ?? '[]');
@@ -126,6 +119,21 @@ router.get('/api/chat/stream', (req, res) => {
       // 非法 JSON 时按无文件处理
     }
   }
+
+  // FORM/文档处理任务流要求 robot.chaoxing.com 本身的账号态。当前服务端
+  // 只有 visitor/apply 匿名会话，Supabase token 只能证明用户已登录本应用，
+  // 不能冒充超星 Cookie。因此明确拒绝误走访客通道，并返回官方顶层入口。
+  if (requiresChaoxingAccountChannel(q, fileInfo.length > 0)) {
+    res.status(409).json({
+      success: false,
+      code: ACCOUNT_CHANNEL_REQUIRED_CODE,
+      error: '该表单需要超星账号态，请从官方账号通道打开',
+      officialUrl: buildChaoxingAccountTaskflowUrl(),
+    });
+    return;
+  }
+
+  const outbound = q;
 
   // SSE 响应头
   res.writeHead(200, {

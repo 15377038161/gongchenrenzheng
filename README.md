@@ -1,4 +1,36 @@
-# projects
+# 碧水智言·工程认证智能助手
+
+本项目是华中科技大学环境科学与工程学院的工程认证材料问答应用，运行在超星 Coder，采用 Express + React + Vite + Supabase。
+
+## 身份与智能体通道
+
+这里有两个不同的身份边界：
+
+1. **应用登录**：用户通过 Coder 平台的超星 OAuth 代理登录，返回 Supabase Session；`/api/chat/*` 每次都在服务端校验该 Session。
+2. **超星智能体账号态**：`robot.chaoxing.com` 的 FORM 任务流要求该域名自身的登录 Cookie。Supabase Session 不能代替它，服务端 `visitor/apply` 也不支持透传用户账号。
+
+因此本项目按能力分流：
+
+- 不触发任务流的普通问答：继续使用自研界面 + 服务端访客会话。
+- “帮我编写工程认证”“帮我提炼文档内容”等任务流触发词，以及所有带附件请求：登录后打开超星官方顶层账号态页面，直接选中 taskId `181612`；附件需在该页面重新选择，不做跨域传递。
+- 后端若收到误走访客通道的 FORM 触发词，返回 HTTP `409` + `CHAOXING_ACCOUNT_CHANNEL_REQUIRED`，不再伪装成“已携带超星身份”。
+
+超星公开 OAuth 文档确认：code 仅能使用一次且 5 分钟过期；AppSecret、网页授权 access_token 及用户信息请求必须留在服务端。本项目不抓取或传递浏览器 Cookie。
+
+## 本地验证
+
+```bash
+pnpm install --frozen-lockfile
+pnpm validate
+pnpm vite build
+pnpm tsup server/server.ts --format cjs --platform node --target node20 --outDir dist-server --no-splitting --no-minify --external vite --external @babel/core
+```
+
+Windows PowerShell 下若未安装 Bash，请直接执行后两条构建命令；Coder 环境可继续使用 `pnpm build`。
+
+---
+
+## Coder 基础工程说明
 
 这是一个基于 Express + Vite + TypeScript + Tailwind CSS 的全栈 Web 应用项目，由 Coder 编程 CLI 创建。
 

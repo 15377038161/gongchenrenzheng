@@ -9,6 +9,10 @@ import { fmtSize } from './components/fmt';
 import { getSupabase } from './lib/supabase';
 import { chatFetch, handleOAuthLoginFlow, isNeedLoginError, loginWithChaoxingOAuth, logout, NEED_LOGIN_TIP } from './lib/auth';
 import {
+  buildChaoxingAccountTaskflowUrl,
+  requiresChaoxingAccountChannel,
+} from '../shared/chaoxing-account-channel';
+import {
   type Attachment,
   type ConversationRow,
   type MessageRow,
@@ -528,7 +532,28 @@ function App() {
   const send = useCallback(
     async (question: string, attachments: Attachment[] = []) => {
       const q = question.trim();
-      if (!q || sending) return;
+      if ((!q && attachments.length === 0) || sending) return;
+
+      // 工程认证 FORM 任务流已不再对匿名 visitor 会话开放。先完成本应用
+      // 的超星 OAuth，再用顶层官方页面打开相同任务流，让 robot.chaoxing.com
+      // 按自身的 Cookie 规则识别账号。附件不做跨域传输，用户在官方页面重新选择。
+      if (requiresChaoxingAccountChannel(q, attachments.length > 0)) {
+        if (!authUser) {
+          setLoadError('工程认证表单需要学习通账号。登录完成后，请再次点击该功能。');
+          await handleLogin();
+          return;
+        }
+        const opened = window.open(buildChaoxingAccountTaskflowUrl(), '_blank');
+        if (opened) opened.opener = null;
+        if (!opened) {
+          setLoadError('浏览器阻止了新窗口，请允许弹出窗口后重试。');
+        } else if (attachments.length > 0) {
+          setLoadError('已打开超星账号态表单；为避免跨域泄露，请在新页面重新选择附件。');
+        }
+        return;
+      }
+
+      if (!q) return;
 
       let convId = activeId;
       let convTitle: string | null = null;
@@ -745,7 +770,7 @@ function App() {
         setSending(false);
       }
     },
-    [activeId, sending, messages.length, ensureRobotSession]
+    [activeId, authUser, sending, messages.length, ensureRobotSession, handleLogin]
   );
 
   /** 表单文件字段上传：先确保会话，再走 /api/chat/upload 拿 objectId */
@@ -958,7 +983,10 @@ function App() {
     [activeId, sending, ensureRobotSession]
   );
 
-  /** 附件选择：立即上传到智能体拿 objectId（发送时随消息带 fileInfo） */
+  /**
+   * 附件选择只保留本地元数据。文档任务流必须在超星官方账号态页面执行，
+   * 不能先把文件上传到匿名 visitor 会话；发送时会打开官方页并提示重新选择。
+   */
   const onPickFiles = (files: FileList | null): void => {
     if (!files || files.length === 0) return;
     const picked: Attachment[] = Array.from(files)
@@ -967,47 +995,6 @@ function App() {
     if (picked.length === 0) return;
     setPendingAtts((prev) => [...prev, ...picked].slice(0, 6));
     if (fileRef.current) fileRef.current.value = '';
-
-    // 逐个真实上传（需绑定到当前会话；无会话时先建会话，确保文件与消息同会话）
-    (async () => {
-      try {
-        let convId = activeId;
-        if (!convId) {
-          const row = await createConversation('材料读取');
-          convId = row.id;
-          setConversations((prev) => [row, ...prev]);
-          skipLoadRef.current = row.id; // 跳过加载 effect：会话为空，避免覆盖待插入的本地状态
-          setActiveId(row.id);
-        }
-        const robot = await ensureRobotSession(convId);
-        for (const att of picked) {
-          const file = Array.from(files).find((f) => f.name === att.name);
-          if (!file) continue;
-          const fd = new FormData();
-          fd.append('visitorId', robot.visitorId);
-          fd.append('visitorVc', robot.visitorVc);
-          fd.append('conversationId', robot.conversationId);
-          fd.append('file', file);
-          const res = await chatFetch('/api/chat/upload', { method: 'POST', body: fd });
-          const data = (await res.json()) as {
-            success?: boolean;
-            file?: { objectId?: string };
-            error?: string;
-          };
-          if (data.success && data.file?.objectId) {
-            setPendingAtts((prev) =>
-              prev.map((p) => (p.name === att.name && !p.objectId ? { ...p, objectId: data.file!.objectId } : p))
-            );
-          } else {
-            throw new Error(data.error ?? `${att.name} 上传失败`);
-          }
-        }
-      } catch (err) {
-        setLoadError(err instanceof Error ? err.message : '文件上传失败');
-        // 上传失败的附件直接移除，避免发送无效文件
-        setPendingAtts((prev) => prev.filter((p) => p.objectId));
-      }
-    })();
   };
 
   /** 语音输入开关（Web Speech API，zh-CN） */
