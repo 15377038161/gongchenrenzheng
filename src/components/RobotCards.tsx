@@ -9,31 +9,87 @@ function isFileField(f: RobotFormField): boolean {
   return f.fieldType?.includes('File') || String(f.type ?? '').includes('File');
 }
 
-/** 表单文件字段的输入 */
+/** 表单文件字段的输入（点击选择 + 拖拽上传，上传中带可视状态） */
 function FormFileInput({
   field,
   value,
   onPick,
   disabled,
+  uploading,
 }: {
   field: RobotFormField;
   value: { name: string; size: number; objectId?: string } | null;
   onPick: (f: File | null) => void;
   disabled: boolean;
+  /** 父级上传中（提交按钮联动） */
+  uploading: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  // 上传完成状态：done（✓ 已就绪）/ failed（上传失败）
+  const [status, setStatus] = useState<'idle' | 'done' | 'failed'>('idle');
+
+  const acceptFile = (f: File | null): void => {
+    if (!f) return;
+    setStatus('idle');
+    onPick(f);
+  };
+
+  // value 变化时同步状态（父级上传成功写入 value → done；objectId 清空时复位）
+  useEffect(() => {
+    if (value?.objectId) setStatus('done');
+    else setStatus((prev) => (prev === 'done' ? 'idle' : prev));
+  }, [value?.objectId]);
+
+  const busy = disabled || uploading;
+
   return (
-    <div>
+    <div
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (!busy) setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        if (busy) return;
+        const f = e.dataTransfer.files?.[0] ?? null;
+        acceptFile(f);
+      }}
+    >
       <button
         type="button"
-        disabled={disabled || uploading}
+        disabled={busy}
         onClick={() => inputRef.current?.click()}
-        className="flex w-full items-center justify-between gap-2 rounded-[10px] border border-dashed border-lake-soft px-3.5 py-2.5 text-left text-[13.5px] text-ink-soft transition-colors hover:border-lake-deep hover:text-lake-deep disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+        className={`flex w-full items-center gap-2.5 rounded-[10px] border border-dashed px-3.5 py-2.5 text-left text-[13.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep ${
+          dragOver
+            ? 'border-lake-deep bg-lake-pale text-lake-deep'
+            : status === 'done'
+              ? 'border-lake-soft text-ink'
+              : 'border-lake-soft text-ink-soft hover:border-lake-deep hover:text-lake-deep'
+        }`}
       >
-        <span className="truncate">{value ? value.name : field.placeholder || '选择文件上传'}</span>
+        {/* 状态图标：上传中 spinner / 完成 ✓ / 默认回形针 */}
+        <span
+          aria-hidden="true"
+          className={`flex h-6 w-6 shrink-0 items-center justify-center text-[13px] ${
+            status === 'done' ? 'text-lake-deep' : 'text-ink-faint'
+          }`}
+        >
+          {status === 'done' ? (
+            '✓'
+          ) : (
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
+            </svg>
+          )}
+        </span>
+        <span className="min-w-0 flex-1 truncate">
+          {value ? value.name : field.placeholder || '点击选择或拖拽文件到此处'}
+        </span>
         <span className="shrink-0 text-[12px] text-ink-faint">
-          {uploading ? '上传中…' : value ? fmtSize(value.size) : '点击选择'}
+          {status === 'done' && value ? fmtSize(value.size) : '选择 / 拖拽'}
         </span>
       </button>
       <input
@@ -43,13 +99,19 @@ function FormFileInput({
         onChange={(e) => {
           const f = e.target.files?.[0] ?? null;
           e.target.value = '';
-          if (f) {
-            setUploading(true);
-            onPick(f);
-          }
+          acceptFile(f);
         }}
-        disabled={disabled}
+        disabled={busy}
       />
+      {/* 拖拽提示条：拖入时可见 */}
+      <div
+        aria-hidden="true"
+        className={`overflow-hidden text-[11.5px] leading-5 text-lake-deep transition-all duration-200 ${
+          dragOver ? 'mt-1 max-h-5 opacity-100' : 'max-h-0 opacity-0'
+        }`}
+      >
+        松开鼠标即可上传「{field.title || field.name}」
+      </div>
     </div>
   );
 }
@@ -142,7 +204,8 @@ export function FormCard({
             <FormFileInput
               field={f}
               value={fileValues[f.name] ?? null}
-              disabled={busy || uploading}
+              disabled={busy}
+              uploading={uploading}
               onPick={(file) => {
                 if (!file) return;
                 setErr('');
