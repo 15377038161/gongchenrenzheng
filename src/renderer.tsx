@@ -1308,11 +1308,13 @@ function App() {
                 发送
               </button>
             </div>
-            <p className="mt-2.5 text-center text-[15.5px] text-ink-faint">
-              {PAGE.footer} · 支持上传附件（展示名称与大小）与语音输入
-            </p>
           </div>
         </footer>
+
+        {/* 底部提示文字：固定在页面最底不动，不随输入框 25vh 抬升/吸底切换而移动 */}
+        <p className="shrink-0 py-2 text-center text-[15.5px] text-ink-faint">
+          {PAGE.footer} · 支持上传附件（展示名称与大小）与语音输入
+        </p>
       </main>
     </div>
   );
