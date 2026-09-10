@@ -23,6 +23,35 @@ export interface LoginResult {
 }
 
 /**
+ * 带登录态的聊天接口请求封装（仅 /api/chat/* 使用）：
+ * - 每次请求实时从 Supabase session 取 token（不缓存），携带 Authorization: Bearer
+ * - 平台 Nginx 会在进入沙箱前把该头重命名为 X-Sandbox-Authorization，前端无需感知
+ * - 未登录或收到 401（登录态失效）时抛 NEED_LOGIN 错误，由调用方引导用户登录
+ */
+export async function chatFetch(input: RequestInfo, init?: RequestInit): Promise<Response> {
+  const { data: { session } } = await getSupabase().auth.getSession();
+  const headers = new Headers(init?.headers);
+  if (session?.access_token) {
+    headers.set('Authorization', `Bearer ${session.access_token}`);
+  } else {
+    throw new Error('NEED_LOGIN');
+  }
+  const res = await fetch(input, { ...init, headers });
+  if (res.status === 401) {
+    // 登录态失效（token 过期/被踢）：统一识别为需要重新登录
+    throw new Error('NEED_LOGIN');
+  }
+  return res;
+}
+
+/** NEED_LOGIN 错误的统一识别与文案转换（聊天链路引导登录用） */
+export function isNeedLoginError(err: unknown): boolean {
+  return err instanceof Error && err.message === 'NEED_LOGIN';
+}
+
+export const NEED_LOGIN_TIP = '请先登录后再使用对话功能';
+
+/**
  * 顶层窗口导航（CRITICAL）：应用可能被嵌入跨域 iframe（平台预览/门户），
  * 超星授权与 checklogin 中转必须发生在浏览器顶层窗口——iframe 内导航时
  * 超星域名读不到自身 cookie（第三方 cookie 隔离），静默授权必然失败、拿不到 code。

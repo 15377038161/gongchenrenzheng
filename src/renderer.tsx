@@ -7,7 +7,7 @@ import { FormCard, MenuCard } from './components/RobotCards';
 import type { RobotForm, RobotMenu } from './lib/robot-types';
 import { fmtSize } from './components/fmt';
 import { getSupabase } from './lib/supabase';
-import { handleOAuthLoginFlow, loginWithChaoxingOAuth, logout } from './lib/auth';
+import { chatFetch, handleOAuthLoginFlow, isNeedLoginError, loginWithChaoxingOAuth, logout, NEED_LOGIN_TIP } from './lib/auth';
 import {
   type Attachment,
   type ConversationRow,
@@ -276,6 +276,8 @@ function App() {
   } | null | undefined>(undefined);
   /** OAuth 回跳在途（checklogin 中转/exchange 进行中），右上角按钮显示过渡态 */
   const [oauthRelaying, setOauthRelaying] = useState(false);
+  /** 用户中心菜单开关：已登录头像点击唤起，含用户信息与退出操作 */
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
 
   const listRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -478,7 +480,7 @@ function App() {
   const ensureRobotSession = useCallback(async (convId: string): Promise<RobotSession> => {
     const cached = robotSessionsRef.current[convId];
     if (cached) return cached;
-    const res = await fetch('/api/chat/session', { method: 'POST' });
+    const res = await chatFetch('/api/chat/session', { method: 'POST' });
     const data = (await res.json()) as { success?: boolean; session?: RobotSession };
     if (!data.success || !data.session) {
       throw new Error('申请智能体会话失败');
@@ -619,7 +621,7 @@ function App() {
           `&visitorVc=${encodeURIComponent(robot.visitorVc)}` +
           `&conversationId=${encodeURIComponent(robot.conversationId)}` +
           (sentFiles.length > 0 ? `&files=${encodeURIComponent(JSON.stringify(sentFiles))}` : '');
-        const res = await fetch(url);
+        const res = await chatFetch(url);
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
         const reader = res.body.getReader();
@@ -723,8 +725,13 @@ function App() {
           setLoadError(err instanceof Error ? err.message : '消息保存失败');
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '回复失败，请重试';
+        // NEED_LOGIN：未登录/登录态失效，提示引导登录（不暴露技术细节给普通错误分支）
+        const msg = isNeedLoginError(err) ? NEED_LOGIN_TIP : err instanceof Error ? err.message : '回复失败，请重试';
         patch((m) => ({ ...m, content: m.content || msg, streaming: false }));
+        if (isNeedLoginError(err)) {
+          setLoadError(NEED_LOGIN_TIP);
+          return;
+        }
         // 失败（含超时）时丢弃缓存的智能体会话：疑似过期，下次发送重新申请
         if (convId && robotSessionsRef.current[convId]) {
           const rest = { ...robotSessionsRef.current };
@@ -754,7 +761,7 @@ function App() {
         fd.append('visitorVc', robot.visitorVc);
         fd.append('conversationId', robot.conversationId);
         fd.append('file', file);
-        const res = await fetch('/api/chat/upload', { method: 'POST', body: fd });
+        const res = await chatFetch('/api/chat/upload', { method: 'POST', body: fd });
         const data = (await res.json()) as {
           success?: boolean;
           file?: { objectId?: string };
@@ -820,7 +827,7 @@ function App() {
 
       try {
         const robot = await ensureRobotSession(convId);
-        const res = await fetch('/api/chat/form', {
+        const res = await chatFetch('/api/chat/form', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -925,12 +932,17 @@ function App() {
           setLoadError(err instanceof Error ? err.message : '消息保存失败');
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : '表单提交失败，请重试';
+        // NEED_LOGIN：未登录/登录态失效，提示引导登录
+        const msg = isNeedLoginError(err) ? NEED_LOGIN_TIP : err instanceof Error ? err.message : '表单提交失败，请重试';
         patch((m) => ({ ...m, content: m.content || msg, streaming: false }));
         // 提交失败时恢复卡片可编辑状态（FormCard catch 后会复位 busy）
         setMessages((prev) =>
           prev.map((m) => (m.id === agentMsgId ? { ...m, formSubmitted: false } : m))
         );
+        if (isNeedLoginError(err)) {
+          setLoadError(NEED_LOGIN_TIP);
+          return;
+        }
         if (robotSessionsRef.current[convId]) {
           const rest = { ...robotSessionsRef.current };
           delete rest[convId];
@@ -976,7 +988,7 @@ function App() {
           fd.append('visitorVc', robot.visitorVc);
           fd.append('conversationId', robot.conversationId);
           fd.append('file', file);
-          const res = await fetch('/api/chat/upload', { method: 'POST', body: fd });
+          const res = await chatFetch('/api/chat/upload', { method: 'POST', body: fd });
           const data = (await res.json()) as {
             success?: boolean;
             file?: { objectId?: string };
@@ -1196,23 +1208,52 @@ function App() {
                 登录中…
               </button>
             ) : authUser ? (
-              <div className="flex items-center gap-2">
-                <span className="hidden min-w-0 items-center gap-1.5 md:flex">
-                  <span
-                    aria-hidden="true"
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-lake-deep text-[12px] font-medium text-white"
-                  >
-                    {authUser.name.slice(0, 1)}
-                  </span>
-                  <span className="max-w-[120px] truncate text-[14.5px] text-ink-soft">{authUser.name}</span>
-                </span>
+              <div className="relative">
+                {/* 头像组件：点击唤起用户中心菜单；点击页面任意处收起 */}
                 <button
                   type="button"
-                  onClick={() => void handleLogout()}
-                  className="flex h-9 items-center rounded-[10px] border border-hairline bg-white px-3 text-[15px] text-ink-soft transition-colors duration-200 hover:border-lake-deep hover:text-lake-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+                  aria-label="用户中心"
+                  aria-expanded={userMenuOpen}
+                  onClick={() => setUserMenuOpen((v) => !v)}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-lake-deep text-[15px] font-medium text-white transition-all duration-200 hover:scale-[1.06] hover:shadow-[0_2px_10px_rgba(58,103,171,0.3)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
                 >
-                  退出
+                  {authUser.name.slice(0, 1)}
                 </button>
+
+                {userMenuOpen && (
+                  <>
+                    {/* 透明遮罩：点击收起菜单，不拦截视觉 */}
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setUserMenuOpen(false)}
+                      aria-hidden="true"
+                    />
+                    <div className="absolute right-0 top-11 z-50 w-56 rounded-[12px] border border-hairline bg-white px-2 py-2 shadow-[0_8px_24px_rgba(27,39,51,0.12)]">
+                      <div className="px-3 py-2.5">
+                        <p className="truncate text-[14.5px] font-medium text-ink">{authUser.name}</p>
+                        <p className="mt-0.5 truncate text-[12.5px] text-ink-faint">
+                          {authUser.email || '超星账号'}
+                        </p>
+                      </div>
+                      <div className="my-1 h-px bg-hairline" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          void handleLogout();
+                        }}
+                        className="flex w-full items-center gap-2 rounded-[8px] px-3 py-2 text-left text-[14.5px] text-ink-soft transition-colors duration-200 hover:bg-lake-pale hover:text-lake-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+                      >
+                        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
+                          <path d="M16 17l5-5-5-5" />
+                          <path d="M21 12H9" />
+                        </svg>
+                        退出登录
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             ) : (
               <button

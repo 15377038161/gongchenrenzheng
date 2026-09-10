@@ -8,6 +8,7 @@ import {
   type RobotFileInfo,
   type RobotFormFieldValue,
 } from '../robot/agent';
+import { requireAuthedUser } from '../auth/guard';
 import dbRouter from './db';
 
 const router = Router();
@@ -17,6 +18,21 @@ router.use(dbRouter);
 
 // 文件上传（内存缓冲，转发给超星智能体）
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+// ── 强制登录拦截（CRITICAL）────────────────────────────
+// 智能体会话接口仅允许已完成身份认证的合法用户调用，禁用匿名链路：
+// 每次请求都关联到具体用户账号身份（日志审计 + 后续账号级个性化基础）。
+// 未登录/无效 token 一律 401，前端收到后引导登录。
+router.use('/api/chat', async (req, res, next) => {
+  const user = await requireAuthedUser(req);
+  if (!user) {
+    res.status(401).json({ success: false, error: '请先登录后再使用对话功能' });
+    return;
+  }
+  // 请求关联用户身份：供内容审核/审计与日志追踪
+  console.log(`[chat-auth] uid=${user.uid} realname=${user.realname} ${req.method} ${req.baseUrl}${req.path}`);
+  next();
+});
 
 /**
  * 申请智能体访客会话。
