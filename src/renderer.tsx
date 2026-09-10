@@ -4,8 +4,11 @@ import { MarkdownView } from './components/MarkdownView';
 import { AgentProgress } from './components/AgentProgress';
 import { BackgroundEffect } from './components/BackgroundEffect';
 import { FormCard, MenuCard } from './components/RobotCards';
+import { LoginOverlay } from './components/LoginOverlay';
 import type { RobotForm, RobotMenu } from './lib/robot-types';
 import { fmtSize } from './components/fmt';
+import { getSupabase } from './lib/supabase';
+import { handleOAuthLoginFlow, logout } from './lib/auth';
 import {
   type Attachment,
   type ConversationRow,
@@ -105,6 +108,17 @@ const SUGGESTIONS = [
 
 /** 智能体会话缓存有效期：12 小时（超星访客会话可能过期，超期自动失效重建） */
 const ROBOT_SESSION_TTL = 12 * 60 * 60 * 1000;
+
+/** 登录用户显示名：超星用户取 realname，邮箱用户取邮箱前缀 */
+function displayName(user: { user_metadata?: Record<string, unknown>; email?: string | null }): string {
+  const meta = user.user_metadata ?? {};
+  for (const key of ['realname', 'full_name', 'name']) {
+    const v = meta[key];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  if (user.email) return user.email.split('@')[0];
+  return '已登录用户';
+}
 
 interface CachedRobotSession {
   session: RobotSession;
@@ -255,22 +269,76 @@ function App() {
   const [pendingAtts, setPendingAtts] = useState<Attachment[]>([]);
   /** 语音输入状态 */
   const [listening, setListening] = useState(false);
-  /** 背景动效开关（localStorage 持久化，默认开启） */
-  const [bgFxOn, setBgFxOn] = useState(() => {
-    try {
-      return localStorage.getItem('engcert_bg_fx') !== '0';
-    } catch {
-      return true;
-    }
-  });
   /** 交互降感：输入聚焦/滚动聊天时降低背景动态层透明度 40% */
   const [bgDimmed, setBgDimmed] = useState(false);
+
+  /* ===== 登录态管理 ===== */
+  /** 登录用户：null 未登录/未知，undefined 表示会话检查中 */
+  const [authUser, setAuthUser] = useState<{
+    name: string;
+    email: string;
+  } | null | undefined>(undefined);
+  /** OAuth 回跳在途（checklogin 中转/exchange 进行中），登录层显示过渡态 */
+  const [oauthRelaying, setOauthRelaying] = useState(false);
 
   const listRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const robotSessionsRef = useRef<Record<string, RobotSession>>({});
   const recRef = useRef<SpeechRecognitionLike | null>(null);
+
+  /** 登录态初始化 + OAuth 回跳闭环：
+   * 1. URL 带 code（超星授权回跳）→ handleOAuthLoginFlow 编排 checklogin 中转与 exchange 兑换
+   * 2. 已有 session（本系统邮箱登录/OAuth 已建立）→ 直接读取用户
+   * 3. 均无 → 未登录，渲染 LoginOverlay 独立登录入口 */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // OAuth 回跳在途标记：中转/exchange 期间登录层显示过渡态，不闪错误
+      const relayed = sessionStorage.getItem('cx_checklogin_relay') === '1';
+      const hasCode = new URLSearchParams(window.location.search).has('code');
+      if (relayed || hasCode) setOauthRelaying(true);
+
+      const result = await handleOAuthLoginFlow();
+      if (cancelled) return;
+      if (result.success) {
+        const {
+          data: { user },
+        } = await getSupabase().auth.getUser();
+        if (!cancelled) {
+          setAuthUser(user ? { name: displayName(user), email: user.email ?? '' } : null);
+          setOauthRelaying(false);
+        }
+        return;
+      }
+      // 无 code 或兑换失败：检查既有 session（邮箱登录）
+      const {
+        data: { session },
+      } = await getSupabase().auth.getSession();
+      if (cancelled) return;
+      if (session?.user) {
+        setAuthUser({
+          name: displayName(session.user),
+          email: session.user.email ?? '',
+        });
+      } else {
+        setAuthUser(null);
+      }
+      setOauthRelaying(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** 登出：清除 session，回到登录覆盖层 */
+  const handleLogout = useCallback(async () => {
+    if (!window.confirm('确定退出登录？')) return;
+    await logout();
+    setAuthUser(null);
+    setMessages([]);
+    setActiveId(null);
+  }, []);
 
   /** 初始化：加载会话列表（嵌入第三方门户等场景下 DB 接口可能不可用，
    * 历史加载失败仅降级为侧栏提示，不阻塞聊天主流程、不弹顶部错误条） */
@@ -944,7 +1012,10 @@ function App() {
 
   return (
     <div className="relative flex h-full min-h-screen">
-      <BackgroundEffect enabled={bgFxOn} dimmed={bgDimmed} />
+      <BackgroundEffect enabled={true} dimmed={bgDimmed} />
+
+      {/* 未登录：登录覆盖层（OAuth 在途时显示过渡态，会话检查中不渲染避免闪屏） */}
+      {authUser === null && <LoginOverlay relaying={oauthRelaying} />}
 
       {/* 移动端遮罩 */}
       {sidebarOpen && (
@@ -1030,42 +1101,29 @@ function App() {
           ))}
         </nav>
 
-        {/* 背景动效开关 */}
-        <div className="border-t border-hairline px-4 py-2.5">
-          <button
-            type="button"
-            role="switch"
-            aria-checked={bgFxOn}
-            onClick={() => {
-              const next = !bgFxOn;
-              setBgFxOn(next);
-              try {
-                localStorage.setItem('engcert_bg_fx', next ? '1' : '0');
-              } catch {
-                // 持久化失败不阻断
-              }
-            }}
-            className="flex w-full items-center justify-between gap-2 rounded-[8px] px-1 py-1 text-[15px] text-ink-soft hover:bg-lake-mist/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
-          >
-            <span>背景动效</span>
-            <span
-              aria-hidden="true"
-              className={`relative inline-flex h-[18px] w-[34px] shrink-0 items-center rounded-full transition-colors duration-200 ${
-                bgFxOn ? 'bg-lake-deep' : 'bg-lake-soft/70'
-              }`}
+        {/* 底部说明（背景动效已改为常开，无需用户手动切换） */}
+        <div className="border-t border-hairline px-4 py-3">
+          {authUser ? (
+            <button
+              type="button"
+              onClick={() => void handleLogout()}
+              className="flex w-full items-center gap-2.5 rounded-[10px] px-1.5 py-1.5 text-left hover:bg-lake-mist/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
             >
               <span
-                className={`absolute h-[14px] w-[14px] rounded-full bg-white shadow-sm transition-transform duration-200 ${
-                  bgFxOn ? 'translate-x-[16px]' : 'translate-x-[2px]'
-                }`}
-              />
-            </span>
-          </button>
-        </div>
-
-        {/* 底部说明 */}
-        <div className="border-t border-hairline px-4 py-3 text-[13px] leading-4 text-ink-faint">
-          {PAGE.brandSub}
+                aria-hidden="true"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lake-deep text-[14px] font-medium text-white"
+              >
+                {authUser.name.slice(0, 1)}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[14.5px] font-medium text-ink">{authUser.name}</span>
+                <span className="block truncate text-[12.5px] text-ink-faint">{authUser.email || '超星账号'}</span>
+              </span>
+              <span className="shrink-0 text-[13px] text-ink-faint hover:text-lake-deep">退出</span>
+            </button>
+          ) : (
+            <p className="text-[13px] leading-4 text-ink-faint">{PAGE.brandSub}</p>
+          )}
         </div>
       </aside>
 
