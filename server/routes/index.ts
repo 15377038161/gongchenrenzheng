@@ -80,6 +80,18 @@ router.get('/api/chat/stream', (req, res) => {
     return;
   }
 
+  // 触发词归一化：超星智能体的意图路由按精确措辞分流——
+  // 「撰写工程认证」等近似表述会落入知识库问答分支（返回长文本），
+  // 而「帮我编写工程认证」才能命中任务流并下发 FORM 表单。此处把撰写类
+  // 触发词统一改写为已实测可触发任务流的规范短语，保证用户输入即可拿到表单。
+  const TRIGGER_CANONICAL = '帮我编写工程认证';
+  const TRIGGER_PATTERN = /^(帮我|请帮我|麻烦)?(撰写|编写|写|做)(一份)?工程(教育)?认证(报告|材料|自评报告)?$/;
+  let outbound = q;
+  if (TRIGGER_PATTERN.test(q)) {
+    outbound = TRIGGER_CANONICAL;
+    console.log(`[chat] trigger normalized: "${q}" -> "${TRIGGER_CANONICAL}"`);
+  }
+
   // 随消息携带的已上传文件（JSON：[{objectId,filename,type,fileSize}]）
   let fileInfo: RobotFileInfo[] = [];
   const rawFiles = String(req.query.files ?? '[]');
@@ -113,7 +125,7 @@ router.get('/api/chat/stream', (req, res) => {
   let accumulated = '';
   const handle = chatOnce(
     { visitorId, visitorVc, conversationId },
-    q,
+    outbound,
     (ev) => {
       switch (ev.type) {
         case 'thought':
