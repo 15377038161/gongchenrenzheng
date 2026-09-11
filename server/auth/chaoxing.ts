@@ -57,7 +57,18 @@ const AUTH_SECRET_SOURCE =
   process.env.CHAOXING_AUTH_SECRET ??
   process.env.CODER_CODING_API_KEY ??
   process.env.SUPABASE_SERVICE_ROLE_KEY ??
-  'chaoxing-auth-local-development-only';
+  // 未配置密钥时仅允许本地开发临时运行；生产环境必须配置稳定密钥，避免公开默认密钥可伪造 token。
+  process.env.CODER_PROJECT_ENV === 'PROD'
+    ? crypto.randomBytes(32).toString('hex')
+    : 'chaoxing-auth-local-development-only';
+if (
+  process.env.CODER_PROJECT_ENV === 'PROD' &&
+  !process.env.CHAOXING_AUTH_SECRET &&
+  !process.env.CODER_CODING_API_KEY &&
+  !process.env.SUPABASE_SERVICE_ROLE_KEY
+) {
+  console.warn('[auth] 未配置 CHAOXING_AUTH_SECRET；生产重启后已签发 token 将失效');
+}
 const AUTH_SECRET_KEY = crypto.createHash('sha256').update(AUTH_SECRET_SOURCE).digest();
 
 /** 内部 token → 登录态记录（磁盘持久化；开发环境热重载/服务重启后 token 依然有效） */

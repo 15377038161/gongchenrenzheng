@@ -11,6 +11,8 @@
 3. `/api/chat/session`、`/api/chat/upload`、`/api/chat/stream`、`/api/chat/form` 均从同一 token 解析账号 Cookie，再透传到智能体链路。登录后会清除旧游客会话，确保表单任务流使用账号 UID。
 4. 机构 FID 默认只作为诊断字段。若部署方确需限制机构，可设置 `CHAOXING_FID_ENFORCE=1731,1385`；其中 `1731` 为华中科技大学，`1385` 为超星自有机构。FID 与 robot 的 `unitId`/`robotId` 不同。
 
+生产环境请配置稳定的 `CHAOXING_AUTH_SECRET`（或确保平台提供 `CODER_CODING_API_KEY`/`SUPABASE_SERVICE_ROLE_KEY`），否则服务重启后无法解码旧 token。
+
 普通问答和文档提炼仍复用同一智能体会话；表单任务流（taskId `181612`）不再回落匿名 visitor。若账号态确实被超星挤下线，服务端只在上游明确返回匿名身份时清理 token，网络抖动不会误杀登录。
 
 ## 本地验证
