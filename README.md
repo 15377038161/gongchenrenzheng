@@ -4,18 +4,14 @@
 
 ## 身份与智能体通道
 
-这里有两个不同的身份边界：
+本项目直接在服务端维护超星账号态，避免“应用已登录但智能体仍是游客”的错位：
 
-1. **应用登录**：用户通过 Coder 平台的超星 OAuth 代理登录，返回 Supabase Session；`/api/chat/*` 每次都在服务端校验该 Session。
-2. **超星智能体账号态**：`robot.chaoxing.com` 的 FORM 任务流要求该域名自身的登录 Cookie。Supabase Session 不能代替它，服务端 `visitor/apply` 也不支持透传用户账号。
+1. 登录弹窗提供“扫码登录”和“账号密码”两种方式。服务端代理超星 passport 协议，成功后只向浏览器返回内部 token、姓名、头像和 FID，不暴露超星 Cookie。
+2. 内部 token 与超星 Cookie 保存在服务端 `.auth-store.json`（已加入 `.gitignore`），服务重启后恢复；页面刷新会调用 `/api/auth/me` 校验并续期。
+3. `/api/chat/session`、`/api/chat/upload`、`/api/chat/stream`、`/api/chat/form` 均从同一 token 解析账号 Cookie，再透传到智能体链路。登录后会清除旧游客会话，确保表单任务流使用账号 UID。
+4. 机构 FID 默认只作为诊断字段。若部署方确需限制机构，可设置 `CHAOXING_FID_ENFORCE=1731,1385`；其中 `1731` 为华中科技大学，`1385` 为超星自有机构。FID 与 robot 的 `unitId`/`robotId` 不同。
 
-因此本项目按能力分流：
-
-- 不触发任务流的普通问答：继续使用自研界面 + 服务端访客会话。
-- “帮我编写工程认证”“帮我提炼文档内容”等任务流触发词，以及所有带附件请求：登录后打开超星官方顶层账号态页面，直接选中 taskId `181612`；附件需在该页面重新选择，不做跨域传递。
-- 后端若收到误走访客通道的 FORM 触发词，返回 HTTP `409` + `CHAOXING_ACCOUNT_CHANNEL_REQUIRED`，不再伪装成“已携带超星身份”。
-
-超星公开 OAuth 文档确认：code 仅能使用一次且 5 分钟过期；AppSecret、网页授权 access_token 及用户信息请求必须留在服务端。本项目不抓取或传递浏览器 Cookie。
+普通问答和文档提炼仍复用同一智能体会话；表单任务流（taskId `181612`）不再回落匿名 visitor。若账号态确实被超星挤下线，服务端只在上游明确返回匿名身份时清理 token，网络抖动不会误杀登录。
 
 ## 本地验证
 
