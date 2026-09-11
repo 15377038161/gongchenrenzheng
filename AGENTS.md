@@ -12,7 +12,7 @@
 
 ## 代码结构
 - `server/robot/agent.ts`：超星智能体协议（applySession / chatOnce / uploadFile）；`RobotFileInfo = { objectId, filename, type, fileSize }`
-- `shared/chaoxing-account-channel.ts`：账号态任务流的唯一路由规则、机构/智能体/任务流 ID 和官方顶层入口
+- `shared/chaoxing-account-channel.ts`：账号态任务流的识别规则、机构/智能体/任务流 ID（不负责页面跳转）
 - `server/routes/index.ts`：`/api/chat/session`、`/api/chat/upload`（multipart）、`/api/chat/stream`（SSE，query 传 `files` JSON）、`/api/health`
 - `server/routes/db.ts`：`/api/db/conversations`、`/api/db/messages` CRUD；插入必须携带 `client_key`（RLS 隔离），请求经 `x-client-key` header 传入
 - `server/db/supabase.ts`：服务端 Supabase 客户端工厂（浏览器不能直连内网 Supabase，一律走服务端代理）
@@ -30,4 +30,4 @@
 - 会话列表加载失败 → 检查是否绕过了服务端代理直连 Supabase
 - 插入 DB 报 RLS 违规 → 检查插入 payload 是否带 `client_key`
 - 带文件对话超时 → 文档提炼任务流耗时长（>120s），前端需容忍长等待，勿设过短的流超时
-- 表单返回“请先登录” → 检查 `/api/auth/me` 是否 authenticated、`/api/chat/session` 的 visitorId 是否等于账号 UID，以及请求是否携带 `authCookieOf(req)`；不要把 token/cookie 暴露给浏览器
+- 表单返回“请先登录” → 检查 `/api/auth/me` 是否 authenticated、`/api/chat/session` 的 visitorId 是否等于账号 UID，以及请求是否携带 `authCookieOf(req)`；任务流请求不得静默降级游客，前端在当前页面重新登录；不要把 token/cookie 暴露给浏览器
