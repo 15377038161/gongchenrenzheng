@@ -6,6 +6,7 @@ import { BackgroundEffect } from './components/BackgroundEffect';
 import { FormCard, MenuCard } from './components/RobotCards';
 import type { RobotForm, RobotMenu } from './lib/robot-types';
 import { fmtSize } from './components/fmt';
+import { buildChaoxingAccountTaskflowUrl, requiresChaoxingAccountChannel } from '../shared/chaoxing-account-channel';
 import {
   type Attachment,
   type ConversationRow,
@@ -112,6 +113,12 @@ const QUICK_PROMPTS = [
 /** 表单填写页（超星智能体内置表单）：新窗口打开，需超星登录态 */
 const FORM_FILL_URL =
   'https://v1.chaoxing.com/mobileSet/gotoUrlPreview?type=0&appId=2348489&mappId=20840782';
+
+const CHAOXING_ACCOUNT_TASKFLOW_URL = buildChaoxingAccountTaskflowUrl();
+
+function openOfficialTaskflow(): void {
+  window.open(CHAOXING_ACCOUNT_TASKFLOW_URL, '_blank', 'noopener,noreferrer');
+}
 
 /** 智能体会话缓存有效期：12 小时（超星访客会话可能过期，超期自动失效重建） */
 const ROBOT_SESSION_TTL = 12 * 60 * 60 * 1000;
@@ -952,6 +959,13 @@ function App() {
 
       if (!q) return;
 
+      // 任务流和附件必须从一开始就在超星官方账号态中运行，不能先申请匿名 visitor。
+      if (requiresChaoxingAccountChannel(q, attachments.length > 0)) {
+        openOfficialTaskflow();
+        setLoadError('已打开超星官方登录/任务流页面，请在该页面完成登录、上传材料和表单提交。');
+        return;
+      }
+
       let convId = activeId;
       let convTitle: string | null = null;
 
@@ -1193,8 +1207,8 @@ function App() {
         // 登录后 ensureRobotSession 的身份升级逻辑会自动以登录身份重建会话，
         // 用户重新点击/输入即可继续走到一半的任务流。
         if ((finalText || '').includes('请先登录') && !authTokenRef.current) {
-          setLoginError('该步骤（推送至表单）需要登录超星账号，登录后重新发送即可继续');
-          setLoginOpen(true);
+          openOfficialTaskflow();
+          setLoadError('超星要求账号登录，已打开官方任务流页面，请在该页面继续。');
         }
       } catch (err) {
         // 失败（含超时）时丢弃缓存的智能体会话：疑似过期，下次发送重新申请
@@ -1647,10 +1661,10 @@ function App() {
             ) : (
               <button
                 type="button"
-                onClick={() => setLoginOpen(true)}
+                onClick={openOfficialTaskflow}
                 className="ml-1.5 shrink-0 rounded-[8px] bg-lake-deep px-3.5 py-1.5 text-[14px] font-medium text-white transition-colors duration-150 hover:bg-[#2f5689] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
               >
-                登录超星账号
+                打开超星官方登录
               </button>
             )}
           </div>
