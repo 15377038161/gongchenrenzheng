@@ -6,7 +6,6 @@ import { BackgroundEffect } from './components/BackgroundEffect';
 import { FormCard, MenuCard } from './components/RobotCards';
 import type { RobotForm, RobotMenu } from './lib/robot-types';
 import { fmtSize } from './components/fmt';
-import { buildChaoxingAccountTaskflowUrl, requiresChaoxingAccountChannel } from '../shared/chaoxing-account-channel';
 import {
   type Attachment,
   type ConversationRow,
@@ -113,12 +112,6 @@ const QUICK_PROMPTS = [
 /** 表单填写页（超星智能体内置表单）：新窗口打开，需超星登录态 */
 const FORM_FILL_URL =
   'https://v1.chaoxing.com/mobileSet/gotoUrlPreview?type=0&appId=2348489&mappId=20840782';
-
-const CHAOXING_ACCOUNT_TASKFLOW_URL = buildChaoxingAccountTaskflowUrl();
-
-function openOfficialTaskflow(): void {
-  window.open(CHAOXING_ACCOUNT_TASKFLOW_URL, '_blank', 'noopener,noreferrer');
-}
 
 /** 智能体会话缓存有效期：12 小时（超星访客会话可能过期，超期自动失效重建） */
 const ROBOT_SESSION_TTL = 12 * 60 * 60 * 1000;
@@ -887,7 +880,9 @@ function App() {
       const uid = authUserRef.current?.uid;
       let upgraded = false;
       if (cached) {
-        if (!uid || cached.visitorId === uid) return { session: cached, upgraded: false };
+        // 有 token 时绝不复用身份未知的旧 visitor；必须重新向服务端申请并校验 UID。
+        if (!authTokenRef.current && !uid) return { session: cached, upgraded: false };
+        if (uid && cached.visitorId === uid) return { session: cached, upgraded: false };
         // 已登录但缓存是匿名会话：升级为登录身份会话
         console.info('[chat] 检测到匿名会话与登录身份不一致，自动升级为登录会话');
         delete robotSessionsRef.current[convId];
@@ -904,11 +899,26 @@ function App() {
       // token 失效自愈：服务端内存登录态可能已丢失（如服务重启），前端立即清理，
       // 避免界面显示已登录、实际请求全部走匿名的「假登录」状态
       if (data.login === false && authTokenRef.current) {
-        console.info('[chat] 登录态已失效（服务端无此 token），自动清理本地登录信息');
+        console.info('[chat] 登录态已失效（服务端无此 token）');
         setToken(null);
+        setLoginOpen(true);
+        throw new Error('登录态已失效，请重新登录后重试');
+      }
+      if (res.status === 401) {
+        setToken(null);
+        setLoginOpen(true);
+        throw new Error('登录态已失效，请重新登录后重试');
       }
       if (!data.success || !data.session) {
         throw new Error('申请智能体会话失败');
+      }
+      if (authTokenRef.current && data.login !== true) {
+        setLoginOpen(true);
+        throw new Error('超星账号态未建立，已阻止游客会话，请重新登录');
+      }
+      if (authUserRef.current && data.session.visitorId !== authUserRef.current.uid) {
+        setLoginOpen(true);
+        throw new Error('超星未识别当前账号态，已阻止游客会话，请重新登录');
       }
       robotSessionsRef.current[convId] = data.session;
       sessionTimestamps[convId] = Date.now(); // 新建会话记录申请时间，供 TTL 判断
@@ -958,13 +968,6 @@ function App() {
       if ((!q && attachments.length === 0) || sending) return;
 
       if (!q) return;
-
-      // 任务流和附件必须从一开始就在超星官方账号态中运行，不能先申请匿名 visitor。
-      if (requiresChaoxingAccountChannel(q, attachments.length > 0)) {
-        openOfficialTaskflow();
-        setLoadError('已打开超星官方登录/任务流页面，请在该页面完成登录、上传材料和表单提交。');
-        return;
-      }
 
       let convId = activeId;
       let convTitle: string | null = null;
@@ -1206,9 +1209,9 @@ function App() {
         // 6. 「请先登录」检测（表单服务拦截）：引导登录后重发原问题。
         // 登录后 ensureRobotSession 的身份升级逻辑会自动以登录身份重建会话，
         // 用户重新点击/输入即可继续走到一半的任务流。
-        if ((finalText || '').includes('请先登录') && !authTokenRef.current) {
-          openOfficialTaskflow();
-          setLoadError('超星要求账号登录，已打开官方任务流页面，请在该页面继续。');
+        if ((finalText || '').includes('请先登录')) {
+          setLoginOpen(true);
+          setLoadError('超星要求账号登录；请在当前页面重新登录后，再重试这条任务流。');
         }
       } catch (err) {
         // 失败（含超时）时丢弃缓存的智能体会话：疑似过期，下次发送重新申请
@@ -1661,10 +1664,13 @@ function App() {
             ) : (
               <button
                 type="button"
-                onClick={openOfficialTaskflow}
+                onClick={() => {
+                  setLoginError('');
+                  setLoginOpen(true);
+                }}
                 className="ml-1.5 shrink-0 rounded-[8px] bg-lake-deep px-3.5 py-1.5 text-[14px] font-medium text-white transition-colors duration-150 hover:bg-[#2f5689] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
               >
-                打开超星官方登录
+                登录超星账号
               </button>
             )}
           </div>

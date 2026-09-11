@@ -8,14 +8,14 @@ const ENGINEERING_CERTIFICATION_PATTERN =
 const DOCUMENT_EXTRACTION_PATTERN =
   /^(?:帮我|请帮我|麻烦)?(?:提炼|提取|读取|分析|总结)(?:一下)?(?:这个|该)?(?:工程认证)?(?:文档|文件|材料)(?:内容)?$/;
 
-/** FORM 任务流必须由超星官方顶层页面建立账号态，不能用匿名 visitor 伪装。 */
+/** FORM 任务流的账号路由元数据；实际请求由本页面服务端透传账号 Cookie。 */
 export function requiresChaoxingAccountChannel(question: string, hasAttachments = false): boolean {
   if (hasAttachments) return true;
   const normalized = question.trim().replace(/[\s\u3000]+/g, '').replace(/[!?！？。，,]+$/g, '');
   return ENGINEERING_CERTIFICATION_PATTERN.test(normalized) || DOCUMENT_EXTRACTION_PATTERN.test(normalized);
 }
 
-/** 官方顶层入口：由超星自己读取登录 Cookie 并承载后续表单节点。 */
+/** 超星任务流入口元数据（仅用于排查/联调，不由前端跳转）。 */
 export function buildChaoxingAccountTaskflowUrl(): string {
   const url = new URL(CHAOXING_AGENT_ACCOUNT_URL);
   url.searchParams.set('unitId', CHAOXING_UNIT_ID);

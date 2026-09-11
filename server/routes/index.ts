@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
 import {
   applySession,
@@ -20,10 +20,27 @@ router.use(dbRouter);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 /** 从请求提取内部登录 token（Authorization: Bearer <token>）并解析超星登录 cookie */
-function authCookieOf(req: Request): string | undefined {
+function authTokenOf(req: Request): string | undefined {
   const header = req.headers.authorization ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  return resolveAuth(token || undefined)?.cookie;
+  return header.startsWith('Bearer ') ? header.slice(7).trim() || undefined : undefined;
+}
+
+function authRecordOf(req: Request) {
+  return resolveAuth(authTokenOf(req));
+}
+
+function authCookieOf(req: Request): string | undefined {
+  return authRecordOf(req)?.cookie;
+}
+
+/** 有 Bearer 但服务端无法解析时禁止静默降级为游客会话。 */
+function requireResolvedAuth(req: Request, res: Response): boolean {
+  const token = authTokenOf(req);
+  if (token && !resolveAuth(token)) {
+    res.status(401).json({ success: false, error: '登录态已失效，请重新登录' });
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -121,7 +138,16 @@ router.post('/api/chat/session', async (req, res) => {
     const header = req.headers.authorization ?? '';
     const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
     const rec = resolveAuth(token || undefined);
+    if (token && !rec) {
+      res.status(401).json({ success: false, error: '登录态已失效，请重新登录' });
+      return;
+    }
     const session = await applySession(rec?.cookie);
+    // 账号态申请必须返回账号 UID；否则本次请求不得落到匿名 visitor。
+    if (rec && session.visitorId !== rec.user.uid) {
+      res.status(502).json({ success: false, error: '超星未识别当前账号态，请重新登录后重试' });
+      return;
+    }
     res.json({ success: true, session, login: Boolean(rec), user: rec?.user ?? null });
   } catch (err) {
     const message = err instanceof Error ? err.message : '申请会话失败';
@@ -135,6 +161,7 @@ router.post('/api/chat/session', async (req, res) => {
  * 返回 { objectId, filename, type, fileSize }，发送消息时随请求带给 stream 接口。
  */
 router.post('/api/chat/upload', upload.single('file'), async (req, res) => {
+  if (!requireResolvedAuth(req, res)) return;
   const { visitorId = '', visitorVc = '', conversationId = '' } = req.body as Record<string, string>;
   const file = req.file;
   if (!visitorId || !visitorVc || !conversationId) {
@@ -164,6 +191,7 @@ router.post('/api/chat/upload', upload.single('file'), async (req, res) => {
  * 事件类型：thought（思考过程）、delta（增量文本）、final（结束）、error（错误）
  */
 router.get('/api/chat/stream', (req, res) => {
+  if (!requireResolvedAuth(req, res)) return;
   const q = String(req.query.q ?? '').trim();
   const visitorId = String(req.query.visitorId ?? '');
   const visitorVc = String(req.query.visitorVc ?? '');
@@ -267,6 +295,7 @@ router.get('/api/chat/stream', (req, res) => {
  * fields：表单字段值数组，文件字段 value 为 objectId 数组（先经 upload 接口上传）。
  */
 router.post('/api/chat/form', (req, res) => {
+  if (!requireResolvedAuth(req, res)) return;
   const body = (req.body ?? {}) as {
     visitorId?: unknown;
     visitorVc?: unknown;
