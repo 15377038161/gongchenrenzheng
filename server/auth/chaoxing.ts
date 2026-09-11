@@ -49,6 +49,17 @@ interface AuthRecord {
 /** 登录态持久化文件：与日志同目录，服务重启后自动加载（含 cookie 的登录凭据，644 以下权限环境） */
 const AUTH_STORE_FILE = path.join(process.cwd(), '.auth-store.json');
 
+/**
+ * 自包含会话 token 的加密密钥。部署环境优先使用显式密钥，其次复用平台密钥；
+ * 这样实例重启/横向扩容后仍能解码 token，不依赖某个容器的本地文件。
+ */
+const AUTH_SECRET_SOURCE =
+  process.env.CHAOXING_AUTH_SECRET ??
+  process.env.CODER_CODING_API_KEY ??
+  process.env.SUPABASE_SERVICE_ROLE_KEY ??
+  'chaoxing-auth-local-development-only';
+const AUTH_SECRET_KEY = crypto.createHash('sha256').update(AUTH_SECRET_SOURCE).digest();
+
 /** 内部 token → 登录态记录（磁盘持久化；开发环境热重载/服务重启后 token 依然有效） */
 const authStore = new Map<string, AuthRecord>();
 const AUTH_TTL_MS = 7 * 24 * 60 * 60 * 1000 - 60 * 60 * 1000;
@@ -78,6 +89,68 @@ function persistAuthStore(): void {
     fs.writeFileSync(AUTH_STORE_FILE, JSON.stringify(raw));
   } catch {
     // 磁盘不可写（如生产容器只读）：退化为内存模式，登录态重启后丢失
+  }
+}
+
+interface AuthEnvelope {
+  version: 1;
+  user: ChaoxingUser;
+  cookie: string;
+  expiresAt: number;
+}
+
+/** 生成自包含加密 token；密文中包含超星 Cookie，但浏览器无法解密。 */
+function issueAuthToken(rec: AuthRecord): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', AUTH_SECRET_KEY, iv);
+  const payload: AuthEnvelope = {
+    version: 1,
+    user: rec.user,
+    cookie: rec.cookie,
+    expiresAt: rec.expiresAt,
+  };
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(payload), 'utf8'), cipher.final()]);
+  return [
+    'cx1',
+    iv.toString('base64url'),
+    cipher.getAuthTag().toString('base64url'),
+    encrypted.toString('base64url'),
+  ].join('.');
+}
+
+/** 解码自包含 token；格式或签名不合法一律视为未登录。 */
+function decodeAuthToken(token: string): AuthRecord | null {
+  try {
+    const [version, ivRaw, tagRaw, encryptedRaw] = token.split('.');
+    if (version !== 'cx1' || !ivRaw || !tagRaw || !encryptedRaw) return null;
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      AUTH_SECRET_KEY,
+      Buffer.from(ivRaw, 'base64url')
+    );
+    decipher.setAuthTag(Buffer.from(tagRaw, 'base64url'));
+    const payload = JSON.parse(
+      Buffer.concat([decipher.update(Buffer.from(encryptedRaw, 'base64url')), decipher.final()]).toString('utf8')
+    ) as Partial<AuthEnvelope>;
+    if (
+      payload.version !== 1 ||
+      !payload.user ||
+      typeof payload.user.uid !== 'string' ||
+      typeof payload.user.name !== 'string' ||
+      typeof payload.user.fid !== 'string' ||
+      typeof payload.user.avatar !== 'string' ||
+      typeof payload.cookie !== 'string' ||
+      typeof payload.expiresAt !== 'number'
+    ) {
+      return null;
+    }
+    return {
+      user: payload.user,
+      cookie: payload.cookie,
+      expiresAt: payload.expiresAt,
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -206,12 +279,13 @@ export async function chaoxingLogin(phone: string, password: string): Promise<{ 
   // 学通标准头像路径（浏览器端直接加载；无头像时该 URL 返回默认图，onerror 再兜底首字头像）
   const avatar = `https://p.anan.chaoxing.com/portrait/${uid.slice(0, 3)}/${uid.slice(3, 6)}/${uid}_1.jpg`;
   const user: ChaoxingUser = { uid, name: displayName, fid, avatar };
-  const token = crypto.randomBytes(24).toString('hex');
-  authStore.set(token, {
+  const record: AuthRecord = {
     user,
     cookie: cookieHeader(),
     expiresAt: Date.now() + AUTH_TTL_MS,
-  });
+  };
+  const token = issueAuthToken(record);
+  authStore.set(token, record);
   persistAuthStore();
   return { token, user };
 }
@@ -219,7 +293,8 @@ export async function chaoxingLogin(phone: string, password: string): Promise<{ 
 /** 校验内部 token：有效返回登录记录（含超星 cookie），无效/过期返回 null */
 export function resolveAuth(token: string | undefined): AuthRecord | null {
   if (!token) return null;
-  const rec = authStore.get(token);
+  // 优先读取本实例缓存；实例重启/横向扩容后从自包含密文恢复。
+  const rec = authStore.get(token) ?? decodeAuthToken(token);
   if (!rec) return null;
   if (Date.now() > rec.expiresAt) {
     authStore.delete(token);
@@ -439,8 +514,9 @@ export async function qrLoginPoll(id: string): Promise<QrLoginStatus> {
     }
     const avatar = `https://p.anan.chaoxing.com/portrait/${uid.slice(0, 3)}/${uid.slice(3, 6)}/${uid}_1.jpg`;
     const user: ChaoxingUser = { uid, name: displayName, fid, avatar };
-    const token = crypto.randomBytes(24).toString('hex');
-    authStore.set(token, { user, cookie: finalCookie, expiresAt: Date.now() + AUTH_TTL_MS });
+    const record: AuthRecord = { user, cookie: finalCookie, expiresAt: Date.now() + AUTH_TTL_MS };
+    const token = issueAuthToken(record);
+    authStore.set(token, record);
     persistAuthStore();
     return { state: 'confirmed', token, user };
   }
