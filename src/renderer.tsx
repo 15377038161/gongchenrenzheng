@@ -1216,6 +1216,11 @@ function App() {
       } catch (err) {
         // 失败（含超时）时丢弃缓存的智能体会话：疑似过期，下次发送重新申请
         const msg = err instanceof Error ? err.message : '回复失败，请重试';
+        if (msg.includes('HTTP 401')) {
+          setToken(null);
+          setLoginOpen(true);
+          setLoadError('该任务流需要超星账号登录，请在当前页面登录后重试。');
+        }
         patch((m) => ({ ...m, content: m.content || msg, streaming: false }));
         if (convId && robotSessionsRef.current[convId]) {
           const rest = { ...robotSessionsRef.current };
@@ -1418,6 +1423,11 @@ function App() {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : '表单提交失败，请重试';
+        if (msg.includes('HTTP 401')) {
+          setToken(null);
+          setLoginOpen(true);
+          setLoadError('表单提交需要超星账号登录，请在当前页面重新登录后重试。');
+        }
         patch((m) => ({ ...m, content: m.content || msg, streaming: false }));
         // 提交失败时恢复卡片可编辑状态（FormCard catch 后会复位 busy）
         setMessages((prev) =>

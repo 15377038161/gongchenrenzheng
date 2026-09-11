@@ -9,6 +9,7 @@ import {
   type RobotFormFieldValue,
 } from '../robot/agent';
 import { chaoxingLogin, chaoxingLogout, qrLoginAbort, qrLoginCreate, qrLoginPoll, resolveAuth, resolveAuthWithVerify } from '../auth/chaoxing';
+import { requiresChaoxingAccountChannel } from '../../shared/chaoxing-account-channel';
 import dbRouter from './db';
 
 const router = Router();
@@ -38,6 +39,15 @@ function requireResolvedAuth(req: Request, res: Response): boolean {
   const token = authTokenOf(req);
   if (token && !resolveAuth(token)) {
     res.status(401).json({ success: false, error: '登录态已失效，请重新登录' });
+    return false;
+  }
+  return true;
+}
+
+function requireAccountAuth(req: Request, res: Response): boolean {
+  if (!requireResolvedAuth(req, res)) return false;
+  if (!authRecordOf(req)) {
+    res.status(401).json({ success: false, error: '该任务流需要超星账号登录，请先登录' });
     return false;
   }
   return true;
@@ -161,7 +171,7 @@ router.post('/api/chat/session', async (req, res) => {
  * 返回 { objectId, filename, type, fileSize }，发送消息时随请求带给 stream 接口。
  */
 router.post('/api/chat/upload', upload.single('file'), async (req, res) => {
-  if (!requireResolvedAuth(req, res)) return;
+  if (!requireAccountAuth(req, res)) return;
   const { visitorId = '', visitorVc = '', conversationId = '' } = req.body as Record<string, string>;
   const file = req.file;
   if (!visitorId || !visitorVc || !conversationId) {
@@ -203,6 +213,11 @@ router.get('/api/chat/stream', (req, res) => {
   }
   if (!visitorId || !visitorVc || !conversationId) {
     res.status(400).json({ error: '会话参数缺失，请先调用 /api/chat/session' });
+    return;
+  }
+
+  if (requiresChaoxingAccountChannel(q, String(req.query.files ?? '[]') !== '[]') && !authRecordOf(req)) {
+    res.status(401).json({ success: false, error: '该任务流需要超星账号登录，请先登录' });
     return;
   }
 
@@ -295,7 +310,7 @@ router.get('/api/chat/stream', (req, res) => {
  * fields：表单字段值数组，文件字段 value 为 objectId 数组（先经 upload 接口上传）。
  */
 router.post('/api/chat/form', (req, res) => {
-  if (!requireResolvedAuth(req, res)) return;
+  if (!requireAccountAuth(req, res)) return;
   const body = (req.body ?? {}) as {
     visitorId?: unknown;
     visitorVc?: unknown;
