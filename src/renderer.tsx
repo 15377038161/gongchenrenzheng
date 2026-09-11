@@ -6,12 +6,6 @@ import { BackgroundEffect } from './components/BackgroundEffect';
 import { FormCard, MenuCard } from './components/RobotCards';
 import type { RobotForm, RobotMenu } from './lib/robot-types';
 import { fmtSize } from './components/fmt';
-import { getSupabase } from './lib/supabase';
-import { chatFetch, handleOAuthLoginFlow, isNeedLoginError, loginWithChaoxingOAuth, logout, NEED_LOGIN_TIP } from './lib/auth';
-import {
-  buildChaoxingAccountTaskflowUrl,
-  requiresChaoxingAccountChannel,
-} from '../shared/chaoxing-account-channel';
 import {
   type Attachment,
   type ConversationRow,
@@ -106,19 +100,24 @@ const SUGGESTIONS = [
   '帮我提炼文档内容',
 ];
 
+/** 快捷提示词（输入框上方标签组）：点击填充到输入框，可编辑后再发送 */
+const QUICK_PROMPTS = [
+  '帮我编写工程认证',
+  '帮我提炼文档内容',
+  '列出章节目录',
+  '读取第一章',
+  '读取 1.1 学生',
+];
+
+/** 表单填写页（超星智能体内置表单）：新窗口打开，需超星登录态 */
+const FORM_FILL_URL =
+  'https://v1.chaoxing.com/mobileSet/gotoUrlPreview?type=0&appId=2348489&mappId=20840782';
+
 /** 智能体会话缓存有效期：12 小时（超星访客会话可能过期，超期自动失效重建） */
 const ROBOT_SESSION_TTL = 12 * 60 * 60 * 1000;
 
-/** 登录用户显示名：超星用户取 realname，邮箱用户取邮箱前缀 */
-function displayName(user: { user_metadata?: Record<string, unknown>; email?: string | null }): string {
-  const meta = user.user_metadata ?? {};
-  for (const key of ['realname', 'full_name', 'name']) {
-    const v = meta[key];
-    if (typeof v === 'string' && v.length > 0) return v;
-  }
-  if (user.email) return user.email.split('@')[0];
-  return '已登录用户';
-}
+/** 整轮流式请求总超时：120s（正常轮含思考+生成远小于此；仅兜底 SSE 挂起导致输入锁不释放的极端场景） */
+const TOTAL_STREAM_TIMEOUT_MS = 120_000;
 
 interface CachedRobotSession {
   session: RobotSession;
@@ -254,6 +253,332 @@ function AttachmentChip({ att, onRemove }: { att: Attachment; onRemove?: () => v
   );
 }
 
+/** 登录弹窗：超星账号登录（手机号+密码，服务端代理 fanyalogin 协议） */
+/** 顶栏用户头像：学通 portrait URL 加载失败（无自定义头像/CDN 不可达）时兜底首字头像 */
+function UserAvatar({ name, avatar }: { name: string; avatar: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!avatar || failed) {
+    return (
+      <span
+        aria-hidden="true"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lake-deep text-[13px] font-medium text-white"
+      >
+        {name.slice(0, 1)}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={avatar}
+      alt={`${name}的头像`}
+      onError={() => setFailed(true)}
+      className="h-8 w-8 shrink-0 rounded-full border border-hairline object-cover"
+    />
+  );
+}
+
+/** 扫码登录 Tab 内部状态 */
+interface QrState {
+  /** 服务端扫码会话 id */
+  id: string;
+  /** 二维码图片（data URL 内联） */
+  image: string;
+}
+
+/**
+ * 扫码登录面板：打开时创建二维码，3s 轮询状态；
+ * 过期/失败自动重建；卸载或关闭弹窗时调用 abort 清理服务端会话。
+ */
+function QrLoginPanel({
+  onConfirmed,
+  onError,
+}: {
+  onConfirmed: (token: string, user: { uid: string; name: string; avatar: string }) => void;
+  onError: (message: string) => void;
+}) {
+  const [qr, setQr] = useState<QrState | null>(null);
+  const [qrState, setQrState] = useState<'loading' | 'pending' | 'scanned' | 'expired' | 'error'>('loading');
+  /** error 状态下的用户提示文案（来自服务端或网络异常） */
+  const [qrError, setQrError] = useState('');
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const sessionRef = useRef<string | null>(null);
+
+  /** 创建（或重建）二维码会话 */
+  const createQr = useCallback(async (): Promise<void> => {
+    clearTimeout(pollTimerRef.current);
+    setQrState('loading');
+    setQr(null);
+    setQrError('');
+    try {
+      const res = await fetch('/api/auth/qr/create', { method: 'POST' });
+      const data = (await res.json()) as { success?: boolean; id?: string; image?: string; error?: string };
+      if (!data.success || !data.id || !data.image) {
+        throw new Error(data.error || '创建二维码失败');
+      }
+      sessionRef.current = data.id;
+      setQr({ id: data.id, image: data.image });
+      setQrState('pending');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '创建二维码失败，请重试');
+      // 5s 后自动重试（网络抖动场景）
+      pollTimerRef.current = setTimeout(() => void createQr(), 5000);
+    }
+  }, [onError]);
+
+  /** 轮询扫码状态（3s 节奏，与超星前端一致） */
+  const pollOnce = useCallback(async (): Promise<void> => {
+    const id = sessionRef.current;
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/auth/qr/poll?id=${encodeURIComponent(id)}`);
+      const data = (await res.json()) as {
+        success?: boolean;
+        state?: 'pending' | 'scanned' | 'confirmed' | 'expired' | 'error';
+        token?: string;
+        user?: { uid: string; name: string; avatar: string };
+        error?: string;
+      };
+      if (data.state === 'confirmed' && data.token && data.user) {
+        clearTimeout(pollTimerRef.current);
+        sessionRef.current = null;
+        onConfirmed(data.token, data.user);
+        return;
+      }
+      if (data.state === 'expired') {
+        setQrState('expired');
+        return; // 停止轮询，等待用户点击「刷新二维码」
+      }
+      if (data.state === 'error') {
+        clearTimeout(pollTimerRef.current);
+        sessionRef.current = null;
+        setQrError(data.error || '扫码登录失败，请重试');
+        setQrState('error');
+        return; // 停止轮询，等待用户点击「重新登录」
+      }
+      if (data.state === 'scanned') {
+        setQrState('scanned');
+      }
+    } catch {
+      // 网络抖动：跳过本轮，下轮继续
+    }
+    pollTimerRef.current = setTimeout(() => void pollOnce(), 3000);
+  }, [onConfirmed]);
+
+  // 打开面板即创建二维码；卸载时停止轮询并 abort 服务端会话
+  useEffect(() => {
+    void createQr();
+    return () => {
+      clearTimeout(pollTimerRef.current);
+      const id = sessionRef.current;
+      if (id) {
+        void fetch(`/api/auth/qr/abort?id=${encodeURIComponent(id)}`, { method: 'POST' }).catch(() => undefined);
+      }
+    };
+  }, [createQr]);
+
+  return (
+    <div className="flex flex-col items-center gap-4 pt-2">
+      <div className="relative">
+        {qr ? (
+          <img
+            src={qr.image}
+            alt="超星登录二维码"
+            width={200}
+            height={200}
+            className={`h-[200px] w-[200px] rounded-[12px] border border-hairline ${qrState === 'expired' ? 'opacity-30' : ''}`}
+          />
+        ) : (
+          <div className="flex h-[200px] w-[200px] items-center justify-center rounded-[12px] border border-hairline bg-lake-pale/40">
+            <span
+              aria-hidden="true"
+              className="h-6 w-6 animate-spin rounded-full border-[2px] border-hairline border-t-lake-deep"
+            />
+          </div>
+        )}
+        {qrState === 'scanned' && (
+          <div className="absolute inset-0 flex items-center justify-center rounded-[12px] bg-white/85">
+            <div className="flex flex-col items-center gap-2">
+              <span aria-hidden="true" className="text-[32px] text-mint-deep">✓</span>
+              <p className="text-[14.5px] text-ink-soft">已扫码，请在手机上确认</p>
+            </div>
+          </div>
+        )}
+        {qrState === 'expired' && (
+          <button
+            type="button"
+            onClick={() => void createQr()}
+            className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-[12px] bg-white/90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+          >
+            <span aria-hidden="true" className="text-[26px] text-ink-faint">⟳</span>
+            <span className="text-[14.5px] font-medium text-lake-deep">二维码已过期，点击刷新</span>
+          </button>
+        )}
+        {qrState === 'error' && (
+          <button
+            type="button"
+            onClick={() => void createQr()}
+            className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-[12px] bg-white/90 px-4 text-center focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+          >
+            <span aria-hidden="true" className="text-[26px] text-ink-faint">!</span>
+            <span className="text-[14.5px] font-medium text-lake-deep">重新获取二维码</span>
+          </button>
+        )}
+      </div>
+
+      <p className="text-center text-[14px] leading-6 text-ink-faint">
+        {qrState === 'pending' && '请使用学习通 App 扫描二维码登录'}
+        {qrState === 'scanned' && '扫描成功，等待手机确认…'}
+        {qrState === 'expired' && '二维码已过期'}
+        {qrState === 'loading' && '正在获取二维码…'}
+        {qrState === 'error' && (qrError || '扫码登录失败，请重试')}
+      </p>
+    </div>
+  );
+}
+
+function LoginDialog({
+  busy,
+  error,
+  onClose,
+  onSubmit,
+  onQrConfirmed,
+}: {
+  busy: boolean;
+  error: string;
+  onClose: () => void;
+  onSubmit: (phone: string, password: string) => void;
+  onQrConfirmed: (token: string, user: { uid: string; name: string; avatar: string }) => void;
+}) {
+  const [phone, setPhone] = useState('');
+  const [password, setPassword] = useState('');
+  /** 登录方式 Tab：qr=扫码登录（默认），pwd=账号密码 */
+  const [loginTab, setLoginTab] = useState<'qr' | 'pwd'>('qr');
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label="登录超星账号"
+    >
+      <div className="w-full max-w-[380px] rounded-[16px] border border-hairline bg-white p-6 shadow-[0_12px_40px_rgba(27,39,51,0.16)]">
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-[19px] font-medium text-ink">登录超星账号</h2>
+            <p className="mt-1.5 text-[14px] leading-5 text-ink-faint">
+              登录后可使用工程认证编写等完整任务流功能
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭登录窗口"
+            disabled={busy}
+            onClick={onClose}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-[16px] text-ink-faint hover:bg-lake-pale hover:text-lake-deep disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* 登录方式 Tab：扫码登录 / 账号密码 */}
+        <div
+          role="tablist"
+          aria-label="登录方式"
+          className="mt-4 grid grid-cols-2 gap-1 rounded-[10px] bg-lake-pale/60 p-1"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={loginTab === 'qr'}
+            onClick={() => setLoginTab('qr')}
+            className={`rounded-[8px] px-3 py-2 text-[14.5px] font-medium transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep ${
+              loginTab === 'qr' ? 'bg-white text-lake-deep shadow-sm' : 'text-ink-soft hover:text-ink'
+            }`}
+          >
+            扫码登录
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={loginTab === 'pwd'}
+            onClick={() => setLoginTab('pwd')}
+            className={`rounded-[8px] px-3 py-2 text-[14.5px] font-medium transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep ${
+              loginTab === 'pwd' ? 'bg-white text-lake-deep shadow-sm' : 'text-ink-soft hover:text-ink'
+            }`}
+          >
+            账号密码
+          </button>
+        </div>
+
+        {loginTab === 'qr' ? (
+          <div className="mt-4">
+            <QrLoginPanel onConfirmed={onQrConfirmed} onError={() => undefined} />
+            {error && (
+              <p role="alert" className="mt-3 rounded-[8px] bg-lake-pale px-3 py-2 text-center text-[14px] leading-5 text-ink-soft">
+                {error}
+              </p>
+            )}
+            <p className="mt-2 text-center text-[13px] leading-4 text-ink-faint">
+              扫码即代表同意超星账号在本站使用登录态
+            </p>
+          </div>
+        ) : (
+          <form
+            className="mt-4 flex flex-col gap-3.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!busy && phone.trim() && password) onSubmit(phone.trim(), password);
+            }}
+          >
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[14px] font-medium text-ink-soft">手机号</span>
+            <input
+              type="tel"
+              inputMode="numeric"
+              autoComplete="username"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              disabled={busy}
+              placeholder="请输入超星账号手机号"
+              className="rounded-[10px] border border-hairline bg-white px-3.5 py-2.5 text-[16px] text-ink outline-none transition-colors duration-150 placeholder:text-ink-faint focus:border-lake-deep focus:shadow-[0_0_0_3px_rgba(58,103,171,0.12)] disabled:opacity-60"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[14px] font-medium text-ink-soft">密码</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+              placeholder="请输入密码"
+              className="rounded-[10px] border border-hairline bg-white px-3.5 py-2.5 text-[16px] text-ink outline-none transition-colors duration-150 placeholder:text-ink-faint focus:border-lake-deep focus:shadow-[0_0_0_3px_rgba(58,103,171,0.12)] disabled:opacity-60"
+            />
+          </label>
+
+          {error && (
+            <p role="alert" className="rounded-[8px] bg-lake-pale px-3 py-2 text-[14px] leading-5 text-ink-soft">
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={busy || !phone.trim() || !password}
+            className="mt-1 flex h-11 items-center justify-center rounded-[10px] bg-lake-deep text-[16.5px] font-medium text-white transition-all duration-150 hover:bg-[#2f5689] disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+          >
+            {busy ? '登录中…' : '登 录'}
+          </button>
+          <p className="text-center text-[13px] leading-4 text-ink-faint">
+            密码仅在登录瞬间使用，不保存在本站
+          </p>
+        </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [conversations, setConversations] = useState<ConversationRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -271,106 +596,115 @@ function App() {
   const [listening, setListening] = useState(false);
   /** 交互降感：输入聚焦/滚动聊天时降低背景动态层透明度 40% */
   const [bgDimmed, setBgDimmed] = useState(false);
+  /** 登录状态：token 经 ref 供请求闭包读取（不入 state，避免渲染耦合），用户信息展示在顶栏右上角 */
+  const [authUser, setAuthUser] = useState<{ uid: string; name: string; avatar: string } | null>(null);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState('');
+  /** 复制成功 Toast 文案（空串即隐藏）：2 秒自动消失 */
+  const [copyToast, setCopyToast] = useState('');
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  /* ===== 登录态管理（右上角入口，不强制登录） ===== */
-  /** 登录用户：null 未登录/未知，undefined 表示会话检查中 */
-  const [authUser, setAuthUser] = useState<{
-    name: string;
-    email: string;
-  } | null | undefined>(undefined);
-  /** OAuth 回跳在途（checklogin 中转/exchange 进行中），右上角按钮显示过渡态 */
-  const [oauthRelaying, setOauthRelaying] = useState(false);
-  /** 用户中心菜单开关：已登录头像点击唤起，含用户信息与退出操作 */
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  /** 展示复制成功 Toast（重复触发时重置 2s 倒计时） */
+  const notifyCopied = useCallback(() => {
+    setCopyToast('复制成功');
+    clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopyToast(''), 2000);
+  }, []);
+
+  /** 复制消息原文到剪贴板（Markdown 源文本，保留代码块/换行/缩进）；非安全上下文降级 execCommand */
+  const copyToClipboard = useCallback(
+    async (text: string) => {
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand('copy');
+        } catch {
+          // 降级也失败时仅不提示成功
+        }
+        document.body.removeChild(ta);
+      }
+      notifyCopied();
+    },
+    [notifyCopied]
+  );
+
+  /** 登录用户信息 ref：ensureRobotSession 升级判定同步读取，避免 /api/auth/me
+   * 异步校验完成前发送消息时 authUser state 尚未恢复、升级判定失效走匿名的竞态 */
+  const authUserRef = useRef<{ uid: string; name: string; avatar: string } | null>(null);
+  const setAuthUserSynced = useCallback((u: { uid: string; name: string; avatar: string } | null) => {
+    authUserRef.current = u;
+    setAuthUser(u);
+  }, []);
 
   const listRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const robotSessionsRef = useRef<Record<string, RobotSession>>({});
   const recRef = useRef<SpeechRecognitionLike | null>(null);
-
-  /** 登录态初始化 + OAuth 回跳闭环 + 会话变化监听：
-   * 1. URL 带 code（超星授权回跳）→ handleOAuthLoginFlow 编排 checklogin 中转与 exchange 兑换
-   * 2. onAuthStateChange 监听 session 变化（OAuth 兑换 setSession / 登出），自动刷新右上角登录态
-   * 3. 初始检查既有 session；无则未登录——页面正常可用，仅右上角显示登录入口按钮 */
-  useEffect(() => {
-    let cancelled = false;
-
-    // OAuth 回跳在途标记：中转/exchange 期间右上角显示过渡态
-    const relayed = sessionStorage.getItem('cx_checklogin_relay') === '1';
-    const hasCode = new URLSearchParams(window.location.search).has('code');
-    if (relayed || hasCode) setOauthRelaying(true);
-
-    // session 变化监听：OAuth 兑换 / 登出都会触发，统一刷新 authUser
-    const { data: authListener } = getSupabase().auth.onAuthStateChange((_event, session) => {
-      if (cancelled) return;
-      setAuthUser(
-        session?.user
-          ? { name: displayName(session.user), email: session.user.email ?? '' }
-          : null
-      );
-      setOauthRelaying(false);
-    });
-
-    (async () => {
-      const result = await handleOAuthLoginFlow();
-      if (cancelled) return;
-      if (result.success) {
-        // 兑换完成：onAuthStateChange 已刷新 authUser，这里兜底读取一次
-        const {
-          data: { user },
-        } = await getSupabase().auth.getUser();
-        if (!cancelled) {
-          setAuthUser(user ? { name: displayName(user), email: user.email ?? '' } : null);
-          setOauthRelaying(false);
-        }
-        return;
+  /** token ref：回调闭包内取最新值，避免依赖数组膨胀 */
+  const authTokenRef = useRef<string | null>(null);
+  const setToken = (t: string | null, user?: { uid: string; name: string; avatar: string } | null) => {
+    authTokenRef.current = t;
+    if (t) {
+      localStorage.setItem('engcert_auth_token', t);
+      if (user) {
+        setAuthUserSynced(user);
+        localStorage.setItem('engcert_auth_user', JSON.stringify(user));
       }
-      // 无 code 或兑换失败：检查既有 session（本系统邮箱登录/OAuth 已建立）
-      // 兑换失败（code 失效/交换异常）时上浮错误提示，避免“页面闪一下”无感知
-      if (result.error) {
-        console.warn('[auth] OAuth 回跳处理失败:', result.error);
-        setLoadError(result.error);
-      }
-      const {
-        data: { session },
-      } = await getSupabase().auth.getSession();
-      if (cancelled) return;
-      setAuthUser(
-        session?.user
-          ? { name: displayName(session.user), email: session.user.email ?? '' }
-          : null
-      );
-      setOauthRelaying(false);
-    })();
-
-    return () => {
-      cancelled = true;
-      authListener.subscription.unsubscribe();
-    };
-  }, []);
-
-  /** 右上角一键登录：跳转超星授权页（门户已登录用户静默完成） */
-  const handleLogin = useCallback(async () => {
-    const result = await loginWithChaoxingOAuth();
-    if (!result.success) {
-      setLoadError(result.error || '跳转授权页失败');
+    } else {
+      localStorage.removeItem('engcert_auth_token');
+      localStorage.removeItem('engcert_auth_user');
+      setAuthUserSynced(null);
     }
-    // 成功时页面即将顶层跳转，无需后续处理
-  }, []);
-
-  /** 登出：清除 session，右上角回到登录入口 */
-  const handleLogout = useCallback(async () => {
-    if (!window.confirm('确定退出登录？')) return;
-    await logout();
-    setAuthUser(null);
+  };
+  /** 统一带 token 的请求头 */
+  const authHeaders = useCallback((): Record<string, string> => {
+    const t = authTokenRef.current;
+    return t ? { Authorization: `Bearer ${t}` } : {};
   }, []);
 
   /** 初始化：加载会话列表（嵌入第三方门户等场景下 DB 接口可能不可用，
    * 历史加载失败仅降级为侧栏提示，不阻塞聊天主流程、不弹顶部错误条） */
   useEffect(() => {
     robotSessionsRef.current = loadRobotSessions();
+    // 恢复登录状态并校验有效性
+    const savedToken = localStorage.getItem('engcert_auth_token');
+    const savedUser = localStorage.getItem('engcert_auth_user');
     (async () => {
+      if (savedToken) {
+        authTokenRef.current = savedToken;
+        if (savedUser) {
+          try {
+            // 同步恢复到 ref：确保首个请求发出前升级判定即可用（/me 校验异步进行，不阻塞）
+            const parsed = JSON.parse(savedUser) as { uid: string; name: string; avatar?: string };
+            // 旧缓存无 avatar 时补默认头像路径，保持类型完整
+            setAuthUserSynced({ ...parsed, avatar: parsed.avatar ?? '' });
+          } catch {
+            // 忽略损坏的用户缓存
+          }
+        }
+        try {
+          const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${savedToken}` } });
+          const data = (await res.json()) as { login?: boolean; user?: { uid: string; name: string; avatar: string } | null };
+          if (data.login && data.user) {
+            setAuthUserSynced(data.user);
+            localStorage.setItem('engcert_auth_user', JSON.stringify(data.user));
+          } else {
+            setToken(null);
+          }
+        } catch {
+          // 校验网络失败时保留本地缓存（乐观保留，后续请求若 401 会自然清理）
+        }
+      }
       try {
         const rows = await listConversations();
         setConversations(rows);
@@ -381,10 +715,11 @@ function App() {
     })();
   }, []);
 
-  /** 卸载时释放语音识别 */
+  /** 卸载时释放语音识别与 Toast 定时器 */
   useEffect(() => {
     return () => {
       recRef.current?.stop();
+      clearTimeout(copyTimerRef.current);
     };
   }, []);
 
@@ -480,20 +815,101 @@ function App() {
     ta.style.height = Math.min(ta.scrollHeight, 180) + 'px';
   }, []);
 
-  /** 获取（或申请）某个本地对话对应的智能体会话 */
-  const ensureRobotSession = useCallback(async (convId: string): Promise<RobotSession> => {
-    const cached = robotSessionsRef.current[convId];
-    if (cached) return cached;
-    const res = await chatFetch('/api/chat/session', { method: 'POST' });
-    const data = (await res.json()) as { success?: boolean; session?: RobotSession };
-    if (!data.success || !data.session) {
-      throw new Error('申请智能体会话失败');
+  /** 登录提交（超星账号，服务端代理 fanyalogin） */
+  const doLogin = useCallback(
+    async (phone: string, password: string): Promise<boolean> => {
+      setLoginBusy(true);
+      setLoginError('');
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone, password }),
+        });
+        const data = (await res.json()) as {
+          success?: boolean;
+          token?: string;
+          user?: { uid: string; name: string; avatar: string };
+          error?: string;
+        };
+        if (!data.success || !data.token) {
+          setLoginError(data.error || '登录失败');
+          return false;
+        }
+        setToken(data.token, data.user ?? null);
+        setLoginOpen(false);
+        // 登录身份变化：清空缓存的访客会话，下次发送以登录身份重新申请
+        robotSessionsRef.current = {};
+        saveRobotSessions({});
+        return true;
+      } catch {
+        setLoginError('网络异常，请稍后重试');
+        return false;
+      } finally {
+        setLoginBusy(false);
+      }
+    },
+    []
+  );
+
+  /** 登出 */
+  const doLogout = useCallback(async (): Promise<void> => {
+    const t = authTokenRef.current;
+    try {
+      if (t) await fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${t}` } });
+    } catch {
+      // 忽略登出网络异常
     }
-    robotSessionsRef.current[convId] = data.session;
-    sessionTimestamps[convId] = Date.now(); // 新建会话记录申请时间，供 TTL 判断
-    saveRobotSessions(robotSessionsRef.current);
-    return data.session;
+    setToken(null);
+    // 身份变化：清空智能体会话缓存
+    robotSessionsRef.current = {};
+    saveRobotSessions({});
   }, []);
+
+  /** 获取（或申请）某个本地对话对应的智能体会话（带登录 token 时为登录身份会话）。
+   * 身份升级（CRITICAL）：登录后 visitorId 应为账号 UID；若缓存的会话还是匿名形态
+   * （visitorId ≠ UID，即「登录前走到一半」的旧会话），自动丢弃并以登录身份重建，
+   * 否则任务流表单环节会以匿名身份被超星拦截（「请先登录账号」）。
+   * 升级返回 upgraded=true：新会话丢失了任务流上下文（任务流状态在超星侧的旧会话里），
+   * 调用方需重发任务流触发语（如「帮我编写工程认证」）重建流程，否则用户输入会被
+   * 当作新话题、超星 LLM 只能兜底回复「您说的我不太明白」。 */
+  const ensureRobotSession = useCallback(
+    async (convId: string): Promise<{ session: RobotSession; upgraded: boolean }> => {
+      const cached = robotSessionsRef.current[convId];
+      // 读 ref（同步恢复，无 /me 竞态）：刷新页面后立即发消息时升级判定依然生效
+      const uid = authUserRef.current?.uid;
+      let upgraded = false;
+      if (cached) {
+        if (!uid || cached.visitorId === uid) return { session: cached, upgraded: false };
+        // 已登录但缓存是匿名会话：升级为登录身份会话
+        console.info('[chat] 检测到匿名会话与登录身份不一致，自动升级为登录会话');
+        delete robotSessionsRef.current[convId];
+        delete sessionTimestamps[convId];
+        upgraded = true;
+      }
+      const res = await fetch('/api/chat/session', { method: 'POST', headers: authHeaders() });
+      const data = (await res.json()) as {
+        success?: boolean;
+        session?: RobotSession;
+        login?: boolean;
+        user?: { uid: string; name: string } | null;
+      };
+      // token 失效自愈：服务端内存登录态可能已丢失（如服务重启），前端立即清理，
+      // 避免界面显示已登录、实际请求全部走匿名的「假登录」状态
+      if (data.login === false && authTokenRef.current) {
+        console.info('[chat] 登录态已失效（服务端无此 token），自动清理本地登录信息');
+        setToken(null);
+      }
+      if (!data.success || !data.session) {
+        throw new Error('申请智能体会话失败');
+      }
+      robotSessionsRef.current[convId] = data.session;
+      sessionTimestamps[convId] = Date.now(); // 新建会话记录申请时间，供 TTL 判断
+      saveRobotSessions(robotSessionsRef.current);
+      return { session: data.session, upgraded };
+    },
+    [authHeaders]
+  );
 
   /** 新建对话 */
   const newChat = useCallback(async () => {
@@ -533,25 +949,6 @@ function App() {
     async (question: string, attachments: Attachment[] = []) => {
       const q = question.trim();
       if ((!q && attachments.length === 0) || sending) return;
-
-      // 工程认证 FORM 任务流已不再对匿名 visitor 会话开放。先完成本应用
-      // 的超星 OAuth，再用顶层官方页面打开相同任务流，让 robot.chaoxing.com
-      // 按自身的 Cookie 规则识别账号。附件不做跨域传输，用户在官方页面重新选择。
-      if (requiresChaoxingAccountChannel(q, attachments.length > 0)) {
-        if (!authUser) {
-          setLoadError('工程认证表单需要学习通账号。登录完成后，请再次点击该功能。');
-          await handleLogin();
-          return;
-        }
-        const opened = window.open(buildChaoxingAccountTaskflowUrl(), '_blank');
-        if (opened) opened.opener = null;
-        if (!opened) {
-          setLoadError('浏览器阻止了新窗口，请允许弹出窗口后重试。');
-        } else if (attachments.length > 0) {
-          setLoadError('已打开超星账号态表单；为避免跨域泄露，请在新页面重新选择附件。');
-        }
-        return;
-      }
 
       if (!q) return;
 
@@ -605,8 +1002,10 @@ function App() {
         streaming: true,
       };
       setMessages((prev) => [...prev, userMsg, agentMsg]);
-      setInput('');
-      setPendingAtts([]);
+      // 仅当发送的正是输入框当前内容时才清空（任务流/菜单选项等程序化发送不覆盖用户草稿）；
+      // 流式期间输入框保持可输入，此处不清空在流中预输入的下一条问题
+      setInput((prev) => (prev.trim() === q ? '' : prev));
+      setPendingAtts((prev) => (prev === attachments ? [] : prev));
       setSending(true);
       if (taRef.current) taRef.current.style.height = 'auto';
 
@@ -627,9 +1026,46 @@ function App() {
         setLoadError(err instanceof Error ? err.message : '消息保存失败');
       }
 
+      /** 整轮流总超时定时器（finally 中清理；abort 后 fetch 抛 AbortError 走既有兜底） */
+      let abortTimer: ReturnType<typeof setTimeout> | undefined;
+
       try {
+        // 3.5 整轮流总超时兜底：SSE 挂起（既无内容也无结束事件，如上游异常）时
+        // 主动中止请求并释放 sending 锁，避免输入区被长期锁死的极端情况
+        const abortCtrl = new AbortController();
+        abortTimer = setTimeout(
+          () => abortCtrl.abort(),
+          TOTAL_STREAM_TIMEOUT_MS
+        );
         // 4. 获取智能体会话（同一会话复用同一 chaoxing conversation，天然保持多轮上下文）
-        const robot = await ensureRobotSession(convId);
+        const { session: robot, upgraded } = await ensureRobotSession(convId);
+
+        // 4.5 会话升级后任务流上下文丢失（任务流状态存在超星侧的旧会话里）：
+        // 静默重发本对话的首条用户消息（通常为任务流触发语，如「帮我编写工程认证」），
+        // 让超星侧任务流重新进入等待输入状态，当前消息才能被任务流正确接续处理，
+        // 否则当前输入会被当作新话题、超星 LLM 只能兜底回复「您说的我不太明白」。
+        if (upgraded) {
+          const trigger = messages.find((m) => m.role === 'user')?.content;
+          if (trigger && trigger !== q) {
+            try {
+              const tUrl =
+                `/api/chat/stream?q=${encodeURIComponent(trigger)}` +
+                `&visitorId=${encodeURIComponent(robot.visitorId)}` +
+                `&visitorVc=${encodeURIComponent(robot.visitorVc)}` +
+                `&conversationId=${encodeURIComponent(robot.conversationId)}`;
+              const tRes = await fetch(tUrl, { headers: authHeaders() });
+              if (tRes.ok && tRes.body) {
+                const tReader = tRes.body.getReader();
+                for (;;) {
+                  const { done } = await tReader.read();
+                  if (done) break;
+                }
+              }
+            } catch {
+              // 重放失败不阻断当前消息：仍尝试直接发送（最坏情况是任务流未重建）
+            }
+          }
+        }
 
         // 4. SSE 流式请求（已上传成功的附件以 fileInfo 形式随消息携带）
         const sentFiles = attachments
@@ -646,7 +1082,7 @@ function App() {
           `&visitorVc=${encodeURIComponent(robot.visitorVc)}` +
           `&conversationId=${encodeURIComponent(robot.conversationId)}` +
           (sentFiles.length > 0 ? `&files=${encodeURIComponent(JSON.stringify(sentFiles))}` : '');
-        const res = await chatFetch(url);
+        const res = await fetch(url, { headers: authHeaders(), signal: abortCtrl.signal });
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
         const reader = res.body.getReader();
@@ -732,13 +1168,16 @@ function App() {
         patch((m) => ({ ...m, streaming: false }));
 
         // 5. 持久化智能体回复（用户消息已在请求前入库）
+        // form/menu 与文本同属一轮输出时两条都存（先文本后卡片，与超星原生消息序一致），
+        // 此前只存卡片导致刷新后文本丢失——「第一话内容断成两截/消失」的根因之一
         try {
-          if (receivedForm) {
-            await insertMessage(convId, 'assistant', encodeForm(receivedForm), lastThoughts);
-          } else if (receivedMenu) {
-            await insertMessage(convId, 'assistant', encodeMenu(receivedMenu), lastThoughts);
-          } else if (finalText) {
+          if (finalText) {
             await insertMessage(convId, 'assistant', finalText, lastThoughts);
+          }
+          if (receivedForm) {
+            await insertMessage(convId, 'assistant', encodeForm(receivedForm), []);
+          } else if (receivedMenu) {
+            await insertMessage(convId, 'assistant', encodeMenu(receivedMenu), []);
           }
           await touchConversation(convId);
           setConversations((prev) => {
@@ -749,15 +1188,18 @@ function App() {
         } catch (err) {
           setLoadError(err instanceof Error ? err.message : '消息保存失败');
         }
-      } catch (err) {
-        // NEED_LOGIN：未登录/登录态失效，提示引导登录（不暴露技术细节给普通错误分支）
-        const msg = isNeedLoginError(err) ? NEED_LOGIN_TIP : err instanceof Error ? err.message : '回复失败，请重试';
-        patch((m) => ({ ...m, content: m.content || msg, streaming: false }));
-        if (isNeedLoginError(err)) {
-          setLoadError(NEED_LOGIN_TIP);
-          return;
+
+        // 6. 「请先登录」检测（表单服务拦截）：引导登录后重发原问题。
+        // 登录后 ensureRobotSession 的身份升级逻辑会自动以登录身份重建会话，
+        // 用户重新点击/输入即可继续走到一半的任务流。
+        if ((finalText || '').includes('请先登录') && !authTokenRef.current) {
+          setLoginError('该步骤（推送至表单）需要登录超星账号，登录后重新发送即可继续');
+          setLoginOpen(true);
         }
+      } catch (err) {
         // 失败（含超时）时丢弃缓存的智能体会话：疑似过期，下次发送重新申请
+        const msg = err instanceof Error ? err.message : '回复失败，请重试';
+        patch((m) => ({ ...m, content: m.content || msg, streaming: false }));
         if (convId && robotSessionsRef.current[convId]) {
           const rest = { ...robotSessionsRef.current };
           delete rest[convId];
@@ -766,11 +1208,12 @@ function App() {
           saveRobotSessions(rest);
         }
       } finally {
+        clearTimeout(abortTimer);
         setActiveThought('');
         setSending(false);
       }
     },
-    [activeId, authUser, sending, messages.length, ensureRobotSession, handleLogin]
+    [activeId, sending, messages.length, ensureRobotSession]
   );
 
   /** 表单文件字段上传：先确保会话，再走 /api/chat/upload 拿 objectId */
@@ -780,13 +1223,13 @@ function App() {
       file: File
     ): Promise<{ name: string; size: number; objectId: string } | null> => {
       try {
-        const robot = await ensureRobotSession(convId);
+        const { session: robot } = await ensureRobotSession(convId);
         const fd = new FormData();
         fd.append('visitorId', robot.visitorId);
         fd.append('visitorVc', robot.visitorVc);
         fd.append('conversationId', robot.conversationId);
         fd.append('file', file);
-        const res = await chatFetch('/api/chat/upload', { method: 'POST', body: fd });
+        const res = await fetch('/api/chat/upload', { method: 'POST', headers: authHeaders(), body: fd });
         const data = (await res.json()) as {
           success?: boolean;
           file?: { objectId?: string };
@@ -851,10 +1294,10 @@ function App() {
       }
 
       try {
-        const robot = await ensureRobotSession(convId);
-        const res = await chatFetch('/api/chat/form', {
+        const { session: robot } = await ensureRobotSession(convId);
+        const res = await fetch('/api/chat/form', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({
             visitorId: robot.visitorId,
             visitorVc: robot.visitorVc,
@@ -957,17 +1400,12 @@ function App() {
           setLoadError(err instanceof Error ? err.message : '消息保存失败');
         }
       } catch (err) {
-        // NEED_LOGIN：未登录/登录态失效，提示引导登录
-        const msg = isNeedLoginError(err) ? NEED_LOGIN_TIP : err instanceof Error ? err.message : '表单提交失败，请重试';
+        const msg = err instanceof Error ? err.message : '表单提交失败，请重试';
         patch((m) => ({ ...m, content: m.content || msg, streaming: false }));
         // 提交失败时恢复卡片可编辑状态（FormCard catch 后会复位 busy）
         setMessages((prev) =>
           prev.map((m) => (m.id === agentMsgId ? { ...m, formSubmitted: false } : m))
         );
-        if (isNeedLoginError(err)) {
-          setLoadError(NEED_LOGIN_TIP);
-          return;
-        }
         if (robotSessionsRef.current[convId]) {
           const rest = { ...robotSessionsRef.current };
           delete rest[convId];
@@ -1136,31 +1574,30 @@ function App() {
           ))}
         </nav>
 
-        {/* 底部说明（背景动效已改为常开，无需用户手动切换） */}
+        {/* 底部：学院说明（登录入口已移至顶栏右上角） */}
         <div className="border-t border-hairline px-4 py-3">
-          {authUser ? (
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              className="flex w-full items-center gap-2.5 rounded-[10px] px-1.5 py-1.5 text-left hover:bg-lake-mist/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
-            >
-              <span
-                aria-hidden="true"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-lake-deep text-[14px] font-medium text-white"
-              >
-                {authUser.name.slice(0, 1)}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[14.5px] font-medium text-ink">{authUser.name}</span>
-                <span className="block truncate text-[12.5px] text-ink-faint">{authUser.email || '超星账号'}</span>
-              </span>
-              <span className="shrink-0 text-[13px] text-ink-faint hover:text-lake-deep">退出</span>
-            </button>
-          ) : (
-            <p className="text-[13px] leading-4 text-ink-faint">{PAGE.brandSub}</p>
-          )}
+          <p className="text-[13px] leading-4 text-ink-faint">{PAGE.brandSub}</p>
         </div>
       </aside>
+
+      {/* 登录弹窗 */}
+      {loginOpen && (
+        <LoginDialog
+          busy={loginBusy}
+          error={loginError}
+          onClose={() => {
+            if (!loginBusy) setLoginOpen(false);
+          }}
+          onSubmit={(phone, password) => void doLogin(phone, password)}
+          onQrConfirmed={(token, user) => {
+            // 扫码登录成功：与密码登录同路径落库（清空匿名会话，下次发送以登录身份申请）
+            setToken(token, user);
+            setLoginOpen(false);
+            robotSessionsRef.current = {};
+            saveRobotSessions({});
+          }}
+        />
+      )}
 
       {/* 主对话区 */}
       <main className="flex min-w-0 flex-1 flex-col">
@@ -1176,84 +1613,44 @@ function App() {
               ☰
             </button>
             <h1 className="truncate text-[18px] font-medium text-ink">{activeTitle}</h1>
+            {/* 表单填写跳转（左上角）：直达超星表单页（新窗口，需超星登录态） */}
+            <a
+              href={FORM_FILL_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="打开工程认证表单填写页（超星新窗口）"
+              className="ml-1 flex shrink-0 items-center gap-1.5 rounded-full border border-lake-soft bg-lake-pale px-3.5 py-1.5 text-[14px] leading-6 font-medium text-lake-deep transition-all duration-150 hover:border-lake-deep hover:shadow-[0_2px_8px_rgba(58,103,171,0.18)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+            >
+              <span aria-hidden="true">📝</span>
+              <span className="hidden sm:inline">填写表单</span>
+            </a>
           </div>
           <div className="flex min-w-0 items-center gap-2.5 text-[15px] text-ink-faint">
             <span aria-hidden="true" className="hidden h-1.5 w-1.5 animate-pulse rounded-full bg-lake-deep sm:block" />
             <span className="hidden sm:block">在线</span>
-
-            {/* 右上角登录入口：未登录一键登录 / 已登录用户名+退出 */}
-            {oauthRelaying ? (
-              <button
-                type="button"
-                disabled
-                className="flex h-9 items-center gap-1.5 rounded-[10px] border border-hairline bg-white px-3 text-[15px] text-ink-soft"
-              >
-                <span
-                  aria-hidden="true"
-                  className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-hairline border-t-lake-deep"
-                />
-                登录中…
-              </button>
-            ) : authUser ? (
-              <div className="relative">
-                {/* 头像组件：点击唤起用户中心菜单；点击页面任意处收起 */}
+            {/* 登录入口/用户信息（2026-09 移至顶栏右上角）：未登录显示登录按钮，
+                登录后显示学通头像 + 姓名 + 退出 */}
+            {authUser ? (
+              <div className="ml-1.5 flex items-center gap-2 border-l border-hairline pl-3">
+                <UserAvatar name={authUser.name} avatar={authUser.avatar} />
+                <span className="hidden min-w-0 truncate text-[14.5px] text-ink-soft md:block" title={authUser.name}>
+                  {authUser.name}
+                </span>
                 <button
                   type="button"
-                  aria-label="用户中心"
-                  aria-expanded={userMenuOpen}
-                  onClick={() => setUserMenuOpen((v) => !v)}
-                  className="flex h-9 w-9 items-center justify-center rounded-full bg-lake-deep text-[15px] font-medium text-white transition-all duration-200 hover:scale-[1.06] hover:shadow-[0_2px_10px_rgba(58,103,171,0.3)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+                  onClick={() => void doLogout()}
+                  className="shrink-0 rounded-md px-2 py-1 text-[13.5px] text-ink-faint hover:bg-lake-pale hover:text-lake-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
                 >
-                  {authUser.name.slice(0, 1)}
+                  退出
                 </button>
-
-                {userMenuOpen && (
-                  <>
-                    {/* 透明遮罩：点击收起菜单，不拦截视觉 */}
-                    <div
-                      className="fixed inset-0 z-40"
-                      onClick={() => setUserMenuOpen(false)}
-                      aria-hidden="true"
-                    />
-                    <div className="absolute right-0 top-11 z-50 w-56 rounded-[12px] border border-hairline bg-white px-2 py-2 shadow-[0_8px_24px_rgba(27,39,51,0.12)]">
-                      <div className="px-3 py-2.5">
-                        <p className="truncate text-[14.5px] font-medium text-ink">{authUser.name}</p>
-                        <p className="mt-0.5 truncate text-[12.5px] text-ink-faint">
-                          {authUser.email || '超星账号'}
-                        </p>
-                      </div>
-                      <div className="my-1 h-px bg-hairline" />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setUserMenuOpen(false);
-                          void handleLogout();
-                        }}
-                        className="flex w-full items-center gap-2 rounded-[8px] px-3 py-2 text-left text-[14.5px] text-ink-soft transition-colors duration-200 hover:bg-lake-pale hover:text-lake-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
-                      >
-                        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" />
-                          <path d="M16 17l5-5-5-5" />
-                          <path d="M21 12H9" />
-                        </svg>
-                        退出登录
-                      </button>
-                    </div>
-                  </>
-                )}
               </div>
             ) : (
               <button
                 type="button"
-                onClick={() => void handleLogin()}
-                className="flex h-9 items-center gap-1.5 rounded-[10px] bg-lake-deep px-3.5 text-[15px] font-medium text-white transition-all duration-200 hover:scale-[1.03] hover:bg-[#2f5689] hover:shadow-[0_2px_10px_rgba(58,103,171,0.3)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+                onClick={() => setLoginOpen(true)}
+                className="ml-1.5 shrink-0 rounded-[8px] bg-lake-deep px-3.5 py-1.5 text-[14px] font-medium text-white transition-colors duration-150 hover:bg-[#2f5689] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
               >
-                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4" />
-                  <path d="M10 17l5-5-5-5" />
-                  <path d="M15 12H3" />
-                </svg>
-                登录
+                登录超星账号
               </button>
             )}
           </div>
@@ -1269,10 +1666,10 @@ function App() {
           </div>
         )}
 
-        {/* 消息流：消息块之间 44px 大留白，问答分组清晰（适老化）
+        {/* 消息流：消息块之间 20px 适中留白（用户反馈 44px 过空，现聚焦内容密度与问答节奏）
             空白页时内层撑满滚动区最小高度，使欢迎区 justify-end 下沉贴住抬升后的输入框上方 */}
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-11 px-5 py-9">
+          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-5 py-9">
             {messages.length === 0 && (
               <div className="flex min-h-0 flex-1 flex-col items-start justify-end gap-5 pb-4">
                 <p className="text-[15.5px] tracking-[0.2em] text-lake-deep">HUST · 环境科学与工程学院</p>
@@ -1307,8 +1704,24 @@ function App() {
                     </div>
                   )}
                   {m.content && (
-                    <div className="max-w-[85%] rounded-[16px] rounded-br-[5px] border border-lake-soft bg-lake-pale px-5 py-3.5 text-[18px] leading-[1.75] text-ink shadow-[0_2px_10px_rgba(58,103,171,0.10)]">
-                      {m.content}
+                    <div className="group relative max-w-[85%]">
+                      <div className="rounded-[16px] rounded-br-[5px] border border-lake-soft bg-lake-pale px-5 py-3.5 text-[18px] leading-[1.75] text-ink shadow-[0_2px_10px_rgba(58,103,171,0.10)]">
+                        {m.content}
+                      </div>
+                      {!m.streaming && (
+                        <button
+                          type="button"
+                          aria-label="复制该消息"
+                          title="复制该消息"
+                          onClick={() => void copyToClipboard(m.content)}
+                          className="absolute -top-1 right-[-36px] flex h-7 w-7 items-center justify-center rounded-full border border-hairline bg-white text-ink-faint opacity-0 shadow-sm transition-all duration-150 hover:border-lake-deep hover:text-lake-deep group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+                        >
+                          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <rect x="9" y="9" width="12" height="12" rx="2.5" />
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1326,7 +1739,7 @@ function App() {
                   />
 
                   {m.content && (
-                    <div className="text-ink">
+                    <div className="group relative max-w-[92%] text-ink">
                       <MarkdownView
                         content={m.content}
                         onOptionClick={!m.streaming && !sending ? (text) => void send(text) : undefined}
@@ -1336,6 +1749,20 @@ function App() {
                           aria-hidden="true"
                           className="ml-0.5 inline-block h-4 w-[2px] translate-y-0.5 animate-pulse bg-lake-deep"
                         />
+                      )}
+                      {!m.streaming && (
+                        <button
+                          type="button"
+                          aria-label="复制该消息"
+                          title="复制该消息"
+                          onClick={() => void copyToClipboard(m.content)}
+                          className="absolute -top-1 right-0 flex h-7 w-7 items-center justify-center rounded-full border border-hairline bg-white text-ink-faint opacity-0 shadow-sm transition-all duration-150 hover:border-lake-deep hover:text-lake-deep group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-lake-deep"
+                        >
+                          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <rect x="9" y="9" width="12" height="12" rx="2.5" />
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                          </svg>
+                        </button>
                       )}
                     </div>
                   )}
@@ -1377,7 +1804,7 @@ function App() {
                         aria-hidden="true"
                         className="h-4 w-4 animate-spin rounded-full border-[1.5px] border-hairline border-t-lake-deep"
                       />
-                      正在连接智能体…
+                      正在思考中
                     </div>
                   )}
                 </div>
@@ -1396,6 +1823,34 @@ function App() {
           }`}
         >
           <div className="mx-auto w-full max-w-3xl px-5 py-4">
+            {/* 快捷提示词标签组：点击填充到输入框（可编辑后再发送）
+                小屏横向滑动（no-scrollbar 隐藏滚动条），不换行、不遮挡输入框；
+                空白页不显示（欢迎区已有同款建议按钮，避免重复） */}
+            {messages.length > 0 && (
+              <div
+                className="no-scrollbar mb-2.5 flex items-center gap-2 overflow-x-auto"
+                role="group"
+                aria-label="快捷提示词"
+              >
+              {QUICK_PROMPTS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => {
+                    setInput(p);
+                    requestAnimationFrame(() => {
+                      autoGrow();
+                      taRef.current?.focus();
+                    });
+                  }}
+                  className="shrink-0 whitespace-nowrap rounded-full border border-hairline bg-white/70 px-3.5 py-1.5 text-[14px] leading-6 text-ink-soft transition-colors duration-150 hover:border-lake-deep hover:bg-lake-pale hover:text-lake-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
+                >
+                  {p}
+                </button>
+              ))}
+              </div>
+            )}
+
             {/* 待发送附件卡片 */}
             {pendingAtts.length > 0 && (
               <div className="mb-2.5 flex flex-wrap gap-2">
@@ -1464,8 +1919,7 @@ function App() {
                 onKeyDown={onKeyDown}
                 rows={1}
                 placeholder={listening ? '正在聆听，请说话…' : PAGE.placeholder}
-                disabled={sending}
-                className="max-h-[180px] min-h-[44px] flex-1 resize-none bg-transparent px-2 py-[6px] text-[18px] leading-[32px] text-ink outline-none placeholder:text-ink-faint placeholder:leading-[32px] disabled:opacity-60"
+                className="max-h-[180px] min-h-[44px] flex-1 resize-none bg-transparent px-2 py-[6px] text-[18px] leading-[32px] text-ink outline-none placeholder:text-ink-faint placeholder:leading-[32px]"
               />
 
               <button
@@ -1484,6 +1938,17 @@ function App() {
         <p className="shrink-0 py-2 text-center text-[15.5px] text-ink-faint">
           {PAGE.footer} · 支持上传附件（展示名称与大小）与语音输入
         </p>
+
+        {/* 复制成功 Toast：复制任意消息后浮现 2 秒 */}
+        {copyToast && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="pointer-events-none fixed left-1/2 top-16 z-50 -translate-x-1/2 rounded-full bg-ink/90 px-4 py-2 text-[15px] leading-6 text-white shadow-[0_4px_16px_rgba(27,39,51,0.25)]"
+          >
+            {copyToast}
+          </div>
+        )}
       </main>
     </div>
   );

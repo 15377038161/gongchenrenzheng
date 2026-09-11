@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import multer from 'multer';
 import {
   applySession,
@@ -8,13 +8,8 @@ import {
   type RobotFileInfo,
   type RobotFormFieldValue,
 } from '../robot/agent';
-import { requireAuthedUser } from '../auth/guard';
+import { chaoxingLogin, chaoxingLogout, qrLoginAbort, qrLoginCreate, qrLoginPoll, resolveAuth, resolveAuthWithVerify } from '../auth/chaoxing';
 import dbRouter from './db';
-import {
-  ACCOUNT_CHANNEL_REQUIRED_CODE,
-  buildChaoxingAccountTaskflowUrl,
-  requiresChaoxingAccountChannel,
-} from '../../shared/chaoxing-account-channel';
 
 const router = Router();
 
@@ -24,29 +19,110 @@ router.use(dbRouter);
 // 文件上传（内存缓冲，转发给超星智能体）
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-// ── 强制登录拦截（CRITICAL）────────────────────────────
-// 智能体会话接口仅允许已完成身份认证的合法用户调用，禁用匿名链路：
-// 每次请求都关联到具体用户账号身份（日志审计 + 后续账号级个性化基础）。
-// 未登录/无效 token 一律 401，前端收到后引导登录。
-router.use('/api/chat', async (req, res, next) => {
-  const user = await requireAuthedUser(req);
-  if (!user) {
-    res.status(401).json({ success: false, error: '请先登录后再使用对话功能' });
+/** 从请求提取内部登录 token（Authorization: Bearer <token>）并解析超星登录 cookie */
+function authCookieOf(req: Request): string | undefined {
+  const header = req.headers.authorization ?? '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  return resolveAuth(token || undefined)?.cookie;
+}
+
+/**
+ * 超星账号登录（服务端代理 fanyalogin 协议）。
+ * 请求体：{ phone, password }；密码仅登录瞬间存在于内存，不落盘。
+ * 成功返回内部 token + 脱敏用户信息，浏览器存 localStorage 并在后续请求携带。
+ */
+router.post('/api/auth/login', async (req, res) => {
+  const body = (req.body ?? {}) as { phone?: unknown; password?: unknown };
+  const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (!phone || !password) {
+    res.status(400).json({ success: false, error: '请输入手机号和密码' });
     return;
   }
-  // 请求关联用户身份：供内容审核/审计与日志追踪
-  console.log(`[chat-auth] user=${user.uid.slice(0, 8)} ${req.method} ${req.baseUrl}${req.path}`);
-  next();
+  try {
+    const { token, user } = await chaoxingLogin(phone, password);
+    res.json({ success: true, token, user });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '登录失败';
+    res.status(401).json({ success: false, error: message });
+  }
+});
+
+/** 登出：作废内部 token */
+router.post('/api/auth/logout', (req, res) => {
+  const header = req.headers.authorization ?? '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  chaoxingLogout(token || undefined);
+  res.json({ success: true });
+});
+
+/** 查询登录状态（页面加载时校验 token 是否仍有效；触发上游存活探测+滑动续期） */
+router.get('/api/auth/me', (req, res) => {
+  const header = req.headers.authorization ?? '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const rec = resolveAuthWithVerify(token || undefined);
+  res.json({ success: true, login: Boolean(rec), user: rec?.user ?? null });
 });
 
 /**
- * 申请智能体访客会话。
- * 返回 visitorId / visitorVc / conversationId，供后续 stream 接口使用。
+ * 扫码登录（2026-09 新增）：三步流程。
+ * 1. POST /api/auth/qr/create → 创建扫码会话，返回内部 id + 二维码图片（base64 内联，
+ *    避免跨域图片直链的 Referer/cookie 约束）
+ * 2. GET /api/auth/qr/poll?id=xxx → 查询状态（pending/scanned/confirmed/expired/error），
+ *    confirmed 时返回内部 token + 脱敏用户信息（与密码登录一致）
+ * 3. POST /api/auth/qr/abort?id=xxx → 放弃登录，清理服务端扫码会话
  */
-router.post('/api/chat/session', async (_req, res) => {
+router.post('/api/auth/qr/create', async (_req, res) => {
   try {
-    const session = await applySession();
-    res.json({ success: true, session });
+    const { id, image, contentType } = await qrLoginCreate();
+    const base64 = Buffer.from(image).toString('base64');
+    res.json({ success: true, id, image: `data:${contentType};base64,${base64}` });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '创建扫码登录失败';
+    res.status(502).json({ success: false, error: message });
+  }
+});
+
+router.get('/api/auth/qr/poll', async (req, res) => {
+  const id = String(req.query.id ?? '');
+  if (!id) {
+    res.status(400).json({ success: false, error: '缺少参数 id' });
+    return;
+  }
+  try {
+    const status = await qrLoginPoll(id);
+    if (status.state === 'confirmed') {
+      res.json({ success: true, state: status.state, token: status.token, user: status.user });
+    } else if (status.state === 'error') {
+      res.status(502).json({ success: false, state: 'error', error: status.message });
+    } else {
+      res.json({ success: true, state: status.state });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '查询扫码状态失败';
+    res.status(502).json({ success: false, error: message });
+  }
+});
+
+router.post('/api/auth/qr/abort', (req, res) => {
+  const id = String((req.body as { id?: unknown } | undefined)?.id ?? req.query.id ?? '');
+  if (id) qrLoginAbort(id);
+  res.json({ success: true });
+});
+
+/**
+ * 申请智能体会话。
+ * 返回 visitorId / visitorVc / conversationId，供后续 stream 接口使用。
+ * 携带有效登录 token 时以超星登录身份申请（visitorLoggedIn），任务流表单等服务对登录用户放行。
+ */
+router.post('/api/chat/session', async (req, res) => {
+  try {
+    // 附带登录态判定：前端据此检测 token 失效（如服务重启后内存登录态丢失）
+    const header = req.headers.authorization ?? '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    const rec = resolveAuth(token || undefined);
+    const session = await applySession(rec?.cookie);
+    res.json({ success: true, session, login: Boolean(rec), user: rec?.user ?? null });
   } catch (err) {
     const message = err instanceof Error ? err.message : '申请会话失败';
     res.status(502).json({ success: false, error: message });
@@ -72,7 +148,8 @@ router.post('/api/chat/upload', upload.single('file'), async (req, res) => {
   try {
     const info = await uploadFile(
       { visitorId, visitorVc, conversationId },
-      { name: file.originalname, type: file.mimetype, buffer: file.buffer }
+      { name: file.originalname, type: file.mimetype, buffer: file.buffer },
+      authCookieOf(req)
     );
     res.json({ success: true, file: info });
   } catch (err) {
@@ -118,19 +195,6 @@ router.get('/api/chat/stream', (req, res) => {
     } catch {
       // 非法 JSON 时按无文件处理
     }
-  }
-
-  // FORM/文档处理任务流要求 robot.chaoxing.com 本身的账号态。当前服务端
-  // 只有 visitor/apply 匿名会话，Supabase token 只能证明用户已登录本应用，
-  // 不能冒充超星 Cookie。因此明确拒绝误走访客通道，并返回官方顶层入口。
-  if (requiresChaoxingAccountChannel(q, fileInfo.length > 0)) {
-    res.status(409).json({
-      success: false,
-      code: ACCOUNT_CHANNEL_REQUIRED_CODE,
-      error: '该表单需要超星账号态，请从官方账号通道打开',
-      officialUrl: buildChaoxingAccountTaskflowUrl(),
-    });
-    return;
   }
 
   const outbound = q;
@@ -182,7 +246,8 @@ router.get('/api/chat/stream', (req, res) => {
           break;
       }
     },
-    fileInfo
+    fileInfo,
+    authCookieOf(req)
   );
 
   // 客户端断开时释放上游连接
@@ -302,7 +367,8 @@ router.post('/api/chat/form', (req, res) => {
           res.end();
           break;
       }
-    }
+    },
+    authCookieOf(req)
   );
 
   // 注意用 res.on('close') 而非 req.on('close')：

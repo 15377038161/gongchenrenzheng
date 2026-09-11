@@ -10,9 +10,8 @@
     "lint:build": "eslint . --quiet",
     "start": "bash ./scripts/start.sh",
     "ts-check": "tsc -p tsconfig.json",
-    "test": "pnpm run --parallel \"/^(lint|ts-check)$/\" && pnpm test:account-channel",
-    "test:account-channel": "tsx --test tests/chaoxing-account-channel.test.ts",
-    "validate": "pnpm run --parallel \"/^(ts-check|lint:build)$/\" && pnpm test:account-channel"
+    "test": "pnpm run --parallel \"/^(lint|ts-check)$/\"",
+    "validate": "pnpm run --parallel \"/^(ts-check|lint:build)$/\""
   },
   "dependencies": {
     "@supabase/supabase-js": "2.95.3",

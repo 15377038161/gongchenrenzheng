@@ -21,6 +21,9 @@ coverage/
 .env.test.local
 .env.production.local
 
+# 登录态持久化文件（含超星登录 cookie，禁止入库）
+.auth-store.json
+
 # Logs
 logs/
 *.log

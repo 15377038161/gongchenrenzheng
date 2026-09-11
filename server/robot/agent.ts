@@ -5,6 +5,9 @@
 const UNIT_ID = '1731';
 const ROBOT_ID = '9a31c8e736704a0b9d57b35c73da681f';
 const ROBOT_ORIGIN = 'https://robot.chaoxing.com';
+/** 请求超星时统一使用的浏览器 UA（登录态 cookie 与 UA 需配套，服务端有指纹校验） */
+const UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 
 /** 访客会话信息（来自 visitor/apply） */
 export interface RobotSession {
@@ -112,13 +115,17 @@ interface OutgoingMessage {
   d: string;
 }
 
-/** 申请匿名访客会话 */
-export async function applySession(): Promise<RobotSession> {
+/** 申请访客会话（可携带超星登录态 cookie：登录用户返回 visitorLoggedIn 会话，visitorId 即账号 UID） */
+export async function applySession(authCookie?: string): Promise<RobotSession> {
   const url =
     `${ROBOT_ORIGIN}/v1/front/chat/visitor/apply?visitorId=&unitId=${UNIT_ID}` +
     `&channel=WEB&robotId=${ROBOT_ID}&referUrl=&vc=&d=&vc3=&uid=&scene=&isLLMPlanning=0`;
   const res = await fetch(url, {
-    headers: { Referer: `${ROBOT_ORIGIN}/coze`, Accept: 'application/json' },
+    headers: {
+      Referer: `${ROBOT_ORIGIN}/coze`,
+      Accept: 'application/json',
+      ...(authCookie ? { Cookie: authCookie, 'User-Agent': UA } : {}),
+    },
   });
   if (!res.ok) {
     throw new Error(`申请会话失败：HTTP ${res.status}`);
@@ -145,7 +152,8 @@ export async function applySession(): Promise<RobotSession> {
  */
 export async function uploadFile(
   session: RobotSession,
-  file: { name: string; type: string; buffer: Buffer }
+  file: { name: string; type: string; buffer: Buffer },
+  authCookie?: string
 ): Promise<RobotFileInfo> {
   const url =
     `${ROBOT_ORIGIN}/v1/front/chat/upload/multipart?conversationId=${session.conversationId}` +
@@ -155,7 +163,11 @@ export async function uploadFile(
   const res = await fetch(url, {
     method: 'POST',
     body: fd,
-    headers: { Referer: `${ROBOT_ORIGIN}/coze`, Accept: 'application/json' },
+    headers: {
+      Referer: `${ROBOT_ORIGIN}/coze`,
+      Accept: 'application/json',
+      ...(authCookie ? { Cookie: authCookie, 'User-Agent': UA } : {}),
+    },
   });
   if (!res.ok) {
     throw new Error(`上传失败：HTTP ${res.status}`);
@@ -200,7 +212,9 @@ function processDownstream(
     );
   }
 
-  // 表单消息：解析 schema 后下发 form 事件并结束本次流
+  // 表单消息：解析 schema 后下发 form 事件并结束本次流。
+  // 任务流「查询结果文本 + 推送表单」是同轮连续两帧，文本先于 FORM 到达并已通过
+  // delta 下发累积；路由层在 form/menu 收尾前会把累积文本透传给前端（防止丢失）
   if (data.answerType === 'FORM') {
     let schema: RobotFormField[] = [];
     try {
@@ -312,7 +326,8 @@ function processDownstream(
 function openRobotChannel(
   session: RobotSession,
   onEvent: (event: RobotStreamEvent) => void,
-  buildMessage: () => OutgoingMessage
+  buildMessage: () => OutgoingMessage,
+  authCookie?: string
 ): { close: () => void } {
   // FORCE_LOGOUT 自愈状态：是否已用新会话重试过（只重试一次，防循环）
   let retriedOnLogout = false;
@@ -330,7 +345,15 @@ function openRobotChannel(
     let settled = false;
     let ws: WebSocket;
     try {
-      ws = new WebSocket(wsUrl);
+      // undici 全局 WS 运行时支持第二参数为 options 对象（含 headers，实测登录态 WS 可用），
+      // 但 TS DOM lib 类型仅声明 string[] 协议形态，此处断言对齐运行时行为
+      ws = new WebSocket(wsUrl, {
+        headers: {
+          'User-Agent': UA,
+          Origin: ROBOT_ORIGIN,
+          ...(authCookie ? { Cookie: authCookie } : {}),
+        },
+      } as unknown as string[]);
     } catch (err) {
       onEvent({ type: 'error', message: err instanceof Error ? err.message : '连接智能体失败' });
       return;
@@ -341,7 +364,10 @@ function openRobotChannel(
       settled = true;
       clearTimeout(idleTimer);
       onEvent(event);
-      try { ws.close(); } catch { /* 忽略关闭异常 */ }
+      // 不主动关闭 WS：客户端主动 close 会被超星记为「用户主动关闭会话」，
+      // 管理后台出现碎片化中断记录（图三 vs 图四差异根源）。
+      // 停止心跳即可——无 KEEPALIVE 后超星平台会自然超时回收连接，会话保持进行中。
+      clearInterval(heartbeat);
     };
 
     // 空闲超时兜底：上游 WS 打开但静默不回（如会话过期）时，保证流一定会结束，
@@ -350,6 +376,15 @@ function openRobotChannel(
     const idleTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
       finish({ type: 'error', message: '智能体长时间无响应（可能是会话已过期），请重新发送' });
     }, IDLE_LIMIT_MS);
+
+    // 内容静默判定（CRITICAL）：任务流的中间步骤答案（如「请输入您的数据编号」）
+    // 是一次性完整消息，既无 sseStop=true 也无 flag=stop 结束标记，上游发完即静默，
+    // WS 甚至保持打开不关（实测 57s 后才被平台关闭）。若只等结束标记，SSE 流会
+    // 挂起导致前端输入框被禁用一分钟左右。收到真实内容分片（delta）后启动本定时器，
+    // 静默期满仍未有新消息（也无思考事件推进）即视为本轮结束，主动下发 final。
+    // 普通流式回答的 delta 间隔远小于该窗口，不受影响；有结束标记时 finish 先触发。
+    const CONTENT_SETTLE_MS = 3000;
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
     const heartbeat = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
@@ -360,6 +395,7 @@ function openRobotChannel(
     const cleanup = () => {
       clearInterval(heartbeat);
       clearTimeout(idleTimer);
+      clearTimeout(settleTimer);
     };
 
     activeCleanup = () => {
@@ -418,14 +454,40 @@ function openRobotChannel(
     ws.onmessage = (ev: MessageEvent) => {
       // 收到任何下行消息即视为链路活跃，重置空闲超时
       idleTimer.refresh();
-      processDownstream(String(ev.data), onEvent, finish);
+      // 内容静默判定：delta（真实内容）出现即（重新）启动 settle 定时器；
+      // thought / final / form / menu / error 等事件出现时按各自语义处理：
+      // thought 说明上游仍在推进（重置 settle 等待后续内容），其余结束类事件
+      // 会触发 finish（settled 置位）使 settle 到期后不再动作。
+      let sawContent = false;
+      processDownstream(
+        String(ev.data),
+        (event) => {
+          if (event.type === 'delta') {
+            sawContent = true;
+          } else if (event.type === 'thought') {
+            // 思考推进中：清掉 pending settle，等待内容或结束信号
+            clearTimeout(settleTimer);
+            settleTimer = undefined;
+          }
+          onEvent(event);
+          if (sawContent) {
+            clearTimeout(settleTimer);
+            settleTimer = setTimeout(() => {
+              // 静默期满仍无新消息：视为本轮结束，主动收尾（finish 幂等，settled 后无副作用）
+              console.log(`[ws] content settle (${CONTENT_SETTLE_MS}ms 静默) conversationId=${sess.conversationId}，主动结束本轮流`);
+              finish({ type: 'final', text: '' });
+            }, CONTENT_SETTLE_MS);
+          }
+        },
+        finish
+      );
     };
   };
 
   /** FORCE_LOGOUT 自愈：申请全新访客会话 → 通知调用方 → 用新会话重连重发 */
   const retryWithFreshSession = async (): Promise<void> => {
     try {
-      const fresh = await applySession();
+      const fresh = await applySession(authCookie);
       console.log(`[ws] FORCE_LOGOUT 自愈：新会话 conversationId=${fresh.conversationId}`);
       onEvent({ type: 'session', session: fresh });
       connect(fresh);
@@ -456,7 +518,8 @@ export function chatOnce(
   session: RobotSession,
   question: string,
   onEvent: (event: RobotStreamEvent) => void,
-  fileInfo: RobotFileInfo[] = []
+  fileInfo: RobotFileInfo[] = [],
+  authCookie?: string
 ): { close: () => void } {
   return openRobotChannel(session, onEvent, () => {
     const now = Date.now();
@@ -479,7 +542,7 @@ export function chatOnce(
       dxNumber: '',
       d: '',
     };
-  });
+  }, authCookie);
 }
 
 /**
@@ -493,7 +556,8 @@ export function submitForm(
   session: RobotSession,
   messageId: string,
   fields: RobotFormFieldValue[],
-  onEvent: (event: RobotStreamEvent) => void
+  onEvent: (event: RobotStreamEvent) => void,
+  authCookie?: string
 ): { close: () => void } {
   return openRobotChannel(session, onEvent, () => {
     const now = Date.now();
@@ -516,5 +580,5 @@ export function submitForm(
       dxNumber: '',
       d: '',
     };
-  });
+  }, authCookie);
 }
