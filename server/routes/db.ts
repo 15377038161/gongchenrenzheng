@@ -1,6 +1,7 @@
 // ABOUTME: /api/db/* 数据库代理路由 — 会话与消息的持久化操作
-// ABOUTME: 浏览器无法直连 Supabase，前端 fetch 相对路径至此转发（RLS 以 x-client-key 隔离）
+// ABOUTME: 登录用户由服务端 token 推导 UID 隔离键，访客才使用 x-client-key
 import { Router, type Request, type Response } from 'express';
+import { resolveAuth } from '../auth/chaoxing';
 import { getServerSupabase, resolveClientKey } from '../db/supabase';
 
 const router = Router();
@@ -38,6 +39,34 @@ function strArray(v: unknown): string[] | null {
   return v.every((x) => typeof x === 'string') ? (v as string[]) : null;
 }
 
+/**
+ * 登录请求的数据库隔离键必须由服务端从 token 推导，不能信任浏览器自行提交的 UID。
+ * 未登录访客才允许使用随机 x-client-key；带失效 token 的请求不能降级到访客桶。
+ */
+function resolveScopedClientKey(req: Request, res: Response): string | null {
+  const header = req.headers.authorization ?? '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  if (token) {
+    const rec = resolveAuth(token);
+    if (!rec) {
+      fail(res, 401, '登录态已失效，请重新登录');
+      return null;
+    }
+    return `engcert_uid_${rec.user.uid}`;
+  }
+  try {
+    const key = resolveClientKey(req);
+    if (key.startsWith('engcert_uid_')) {
+      fail(res, 401, '该历史会话属于登录用户，请先登录');
+      return null;
+    }
+    return key;
+  } catch {
+    fail(res, 400, '缺少 client key');
+    return null;
+  }
+}
+
 function attArray(v: unknown): Attachment[] | null {
   if (!Array.isArray(v)) return null;
   return v
@@ -58,13 +87,8 @@ function attArray(v: unknown): Attachment[] | null {
 
 /** 校验 client_key 并取客户端实例 */
 function useClient(req: Request, res: Response) {
-  try {
-    const key = resolveClientKey(req);
-    return getServerSupabase(key);
-  } catch {
-    fail(res, 400, '缺少 client key');
-    return null;
-  }
+  const key = resolveScopedClientKey(req, res);
+  return key ? getServerSupabase(key) : null;
 }
 
 /** 会话列表（更新时间倒序） */
@@ -86,13 +110,8 @@ router.get('/api/db/conversations', async (req, res) => {
 
 /** 新建会话（client_key 由服务端写入，满足 RLS withCheck 与 NOT NULL） */
 router.post('/api/db/conversations', async (req, res) => {
-  let key: string;
-  try {
-    key = resolveClientKey(req);
-  } catch {
-    fail(res, 400, '缺少 client key');
-    return;
-  }
+  const key = resolveScopedClientKey(req, res);
+  if (!key) return;
   const supabase = getServerSupabase(key);
   const body = (req.body ?? {}) as ConversationPayload;
   const title = str(body.title, '新对话').slice(0, 120);

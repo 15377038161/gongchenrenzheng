@@ -66,7 +66,7 @@ const _clients = new Map<string, SupabaseClient<Database>>();
 
 /**
  * 获取服务端 Supabase 客户端（按 client_key 隔离实例）。
- * 每个用户（浏览器 localStorage 匿名标识）一个实例，RLS 沿用同一套 x-client-key 隔离策略。
+ * 登录用户使用 UID 命名空间，访客使用浏览器匿名标识，RLS 沿用同一套 x-client-key 隔离策略。
  */
 export function getServerSupabase(clientKey: string): SupabaseClient<Database> {
   if (!/^[A-Za-z0-9_-]{8,64}$/.test(clientKey)) {

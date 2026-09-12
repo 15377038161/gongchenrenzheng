@@ -127,10 +127,23 @@ interface CachedRobotSession {
 /** 各会话的缓存时间（跨 save 保留原始时间戳，避免保存操作刷新 TTL） */
 const sessionTimestamps: Record<string, number> = {};
 
+function robotSessionStorageKey(): string {
+  try {
+    const raw = localStorage.getItem('engcert_auth_user');
+    const user = raw ? (JSON.parse(raw) as { uid?: unknown }) : null;
+    if (user && typeof user.uid === 'string' && /^[A-Za-z0-9_-]{1,48}$/.test(user.uid)) {
+      return `engcert_robot_sessions_${user.uid}`;
+    }
+  } catch {
+    // 损坏的用户缓存按匿名会话桶处理。
+  }
+  return 'engcert_robot_sessions_anonymous';
+}
+
 /** 从 localStorage 读取智能体会话映射（本地对话 → chaoxing 会话）；过期条目直接丢弃 */
 function loadRobotSessions(): Record<string, RobotSession> {
   try {
-    const raw = JSON.parse(localStorage.getItem('engcert_robot_sessions') ?? 'null') as
+    const raw = JSON.parse(localStorage.getItem(robotSessionStorageKey()) ?? 'null') as
       | Record<string, CachedRobotSession>
       | null;
     const out: Record<string, RobotSession> = {};
@@ -161,7 +174,7 @@ function saveRobotSessions(map: Record<string, RobotSession>): void {
   for (const [id, session] of Object.entries(map)) {
     raw[id] = { session, ts: sessionTimestamps[id] ?? now };
   }
-  localStorage.setItem('engcert_robot_sessions', JSON.stringify(raw));
+  localStorage.setItem(robotSessionStorageKey(), JSON.stringify(raw));
 }
 
 let nextTempId = 1;
@@ -672,6 +685,22 @@ function App() {
     return t ? { Authorization: `Bearer ${t}` } : {};
   }, []);
 
+  /** 按当前登录身份重新加载本地会话桶。登录/登出切换时必须清空旧视图，
+   * 否则用户会短暂看到另一身份的历史任务流，甚至继续在旧会话上发送消息。 */
+  const reloadConversationNamespace = useCallback(async (): Promise<void> => {
+    setMessages([]);
+    setActiveId(null);
+    setConversations([]);
+    try {
+      const rows = await listConversations();
+      setConversations(rows);
+      if (rows.length > 0) setActiveId(rows[0].id);
+      setHistoryUnavailable(false);
+    } catch {
+      setHistoryUnavailable(true);
+    }
+  }, []);
+
   /** 初始化：加载会话列表（嵌入第三方门户等场景下 DB 接口可能不可用，
    * 历史加载失败仅降级为侧栏提示，不阻塞聊天主流程、不弹顶部错误条） */
   useEffect(() => {
@@ -705,15 +734,9 @@ function App() {
           // 校验网络失败时保留本地缓存（乐观保留，后续请求若 401 会自然清理）
         }
       }
-      try {
-        const rows = await listConversations();
-        setConversations(rows);
-        if (rows.length > 0) setActiveId(rows[0].id);
-      } catch {
-        setHistoryUnavailable(true);
-      }
+      await reloadConversationNamespace();
     })();
-  }, []);
+  }, [reloadConversationNamespace]);
 
   /** 卸载时释放语音识别与 Toast 定时器 */
   useEffect(() => {
@@ -841,6 +864,7 @@ function App() {
         // 登录身份变化：清空缓存的访客会话，下次发送以登录身份重新申请
         robotSessionsRef.current = {};
         saveRobotSessions({});
+        await reloadConversationNamespace();
         return true;
       } catch {
         setLoginError('网络异常，请稍后重试');
@@ -849,7 +873,7 @@ function App() {
         setLoginBusy(false);
       }
     },
-    []
+    [reloadConversationNamespace]
   );
 
   /** 登出 */
@@ -864,7 +888,8 @@ function App() {
     // 身份变化：清空智能体会话缓存
     robotSessionsRef.current = {};
     saveRobotSessions({});
-  }, []);
+    await reloadConversationNamespace();
+  }, [reloadConversationNamespace]);
 
   /** 获取（或申请）某个本地对话对应的智能体会话（带登录 token 时为登录身份会话）。
    * 身份升级（CRITICAL）：登录后 visitorId 应为账号 UID；若缓存的会话还是匿名形态
@@ -902,11 +927,13 @@ function App() {
         console.info('[chat] 登录态已失效（服务端无此 token）');
         setToken(null);
         setLoginOpen(true);
+        void reloadConversationNamespace();
         throw new Error('登录态已失效，请重新登录后重试');
       }
       if (res.status === 401) {
         setToken(null);
         setLoginOpen(true);
+        void reloadConversationNamespace();
         throw new Error('登录态已失效，请重新登录后重试');
       }
       if (!data.success || !data.session) {
@@ -925,16 +952,21 @@ function App() {
       saveRobotSessions(robotSessionsRef.current);
       return { session: data.session, upgraded };
     },
-    [authHeaders]
+    [authHeaders, reloadConversationNamespace]
   );
 
   /** 新建对话 */
   const newChat = useCallback(async () => {
+    // 先清空当前视图，避免创建请求或历史加载较慢时继续显示旧任务流。
+    setMessages([]);
+    setActiveId(null);
+    skipLoadRef.current = null;
     try {
       const row = await createConversation();
       setConversations((prev) => [row, ...prev]);
+      // 新建本地会话不加载任何历史消息；首次发送时才申请全新的超星会话。
+      skipLoadRef.current = row.id;
       setActiveId(row.id);
-      setMessages([]);
       setSidebarOpen(false);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : '新建会话失败');
@@ -1622,6 +1654,7 @@ function App() {
             setLoginOpen(false);
             robotSessionsRef.current = {};
             saveRobotSessions({});
+            void reloadConversationNamespace();
           }}
         />
       )}

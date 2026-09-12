@@ -11,9 +11,13 @@
 3. `/api/chat/session`、`/api/chat/upload`、`/api/chat/stream`、`/api/chat/form` 均从同一 token 解析账号 Cookie，再透传到智能体链路。登录后会清除旧游客会话，确保表单任务流使用账号 UID。
 4. 机构 FID 默认只作为诊断字段。若部署方确需限制机构，可设置 `CHAOXING_FID_ENFORCE=1731,1385`；其中 `1731` 为华中科技大学，`1385` 为超星自有机构。FID 与 robot 的 `unitId`/`robotId` 不同。
 
+这里不能配置共享的 `CHAOXING_SERVICE_PHONE/PASSWORD/COOKIE/UID` 作为任务流账号。每位教师必须在页面使用自己的超星账号登录；服务端按内部 token 找到该教师自己的 Cookie，申请会话得到对应 UID，并在 WebSocket 的 `userId` 与表单提交链路中持续使用该 UID。共享服务账号会导致所有表单显示同一个填报人，属于错误架构。
+
 生产环境请配置稳定的 `CHAOXING_AUTH_SECRET`（或确保平台提供 `CODER_CODING_API_KEY`/`SUPABASE_SERVICE_ROLE_KEY`），否则服务重启后无法解码旧 token。
 
-普通问答、文档提炼和表单任务流（taskId `181612`）全部在本页面复用同一账号态会话，不再跳转原始超星页面，也不再回落匿名 visitor。只要请求带有 Bearer token，服务端无法解析或申请到的 visitorId 不等于账号 UID 就直接返回 401/502，前端提示重新登录，避免表单节点中途才出现“请先登录”。若账号态确实被超星挤下线，服务端只在上游明确返回匿名身份时清理 token，网络抖动不会误杀登录。
+普通问答、文档提炼和表单任务流（taskId `181612`）全部在本页面复用当前教师自己的账号态会话，不再跳转原始超星页面，也不再回落匿名 visitor。只要请求带有 Bearer token，服务端无法解析、申请到的 visitorId 不等于账号 UID，或表单提交会话不属于当前 UID，就直接返回 401/409/502，前端提示重新登录，避免表单节点中途才出现“请先登录”。
+
+本地历史会话也按登录 UID 分桶：教师 A 登出后，教师 B 不会看到 A 的会话；点击“新建对话”会先清空旧消息，创建新的本地会话，首次发送时再申请独立的超星会话。
 
 ## 本地验证
 

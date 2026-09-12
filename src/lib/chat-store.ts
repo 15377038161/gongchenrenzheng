@@ -29,7 +29,12 @@ export interface MessageRow {
 /** 请求头：携带浏览器匿名标识（client_key 隔离边界） */
 function dbHeaders(): HeadersInit {
   const key = getClientKey();
-  return { 'Content-Type': 'application/json', 'x-client-key': key };
+  const token = localStorage.getItem('engcert_auth_token');
+  return {
+    'Content-Type': 'application/json',
+    'x-client-key': key,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 }
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
@@ -128,14 +133,31 @@ export async function deleteConversation(id: string): Promise<void> {
   await jsonOrThrow<unknown>(res);
 }
 
-/** 浏览器端匿名标识（localStorage 持久化），作为 RLS 隔离边界 */
+/**
+ * 数据隔离键：登录后按超星 UID 分桶，未登录时使用浏览器匿名桶。
+ * 这样教师 A 登出后教师 B 不会继续看到 A 的历史会话；同一教师刷新页面
+ * 仍会落到同一个桶。UID 只作为隔离命名空间，不作为鉴权凭证。
+ */
 export function getClientKey(): string {
+  const authUserRaw = localStorage.getItem('engcert_auth_user');
+  const authToken = localStorage.getItem('engcert_auth_token');
+  if (authUserRaw && authToken) {
+    try {
+      const authUser = JSON.parse(authUserRaw) as { uid?: unknown };
+      if (typeof authUser.uid === 'string' && /^[A-Za-z0-9_-]{1,48}$/.test(authUser.uid)) {
+        return `engcert_uid_${authUser.uid}`;
+      }
+    } catch {
+      // 损坏的用户缓存按匿名桶处理，避免阻断页面加载。
+    }
+  }
+
   const KEY = 'engcert_client_key';
   let key = localStorage.getItem(KEY);
-  if (!key) {
+  if (!key || !/^engcert_[A-Za-z0-9_-]{8,64}$/.test(key)) {
     key = typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID().replace(/-/g, '')
-      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
+      ? `engcert_${crypto.randomUUID().replace(/-/g, '')}`
+      : `engcert_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 14)}`;
     localStorage.setItem(KEY, key);
   }
   return key;

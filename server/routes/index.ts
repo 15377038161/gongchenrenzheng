@@ -53,6 +53,17 @@ function requireAccountAuth(req: Request, res: Response): boolean {
   return true;
 }
 
+/** 校验请求中的智能体会话确实属于当前登录账号，防止表单填报人串号。 */
+function requireAccountSession(req: Request, res: Response, visitorId: string): boolean {
+  if (!requireAccountAuth(req, res)) return false;
+  const rec = authRecordOf(req);
+  if (!rec || visitorId !== rec.user.uid) {
+    res.status(409).json({ success: false, error: '智能体会话与当前登录账号不一致，请重新申请会话' });
+    return false;
+  }
+  return true;
+}
+
 /**
  * 超星账号登录（服务端代理 fanyalogin 协议）。
  * 请求体：{ phone, password }；密码仅登录瞬间存在于内存，不落盘。
@@ -171,7 +182,6 @@ router.post('/api/chat/session', async (req, res) => {
  * 返回 { objectId, filename, type, fileSize }，发送消息时随请求带给 stream 接口。
  */
 router.post('/api/chat/upload', upload.single('file'), async (req, res) => {
-  if (!requireAccountAuth(req, res)) return;
   const { visitorId = '', visitorVc = '', conversationId = '' } = req.body as Record<string, string>;
   const file = req.file;
   if (!visitorId || !visitorVc || !conversationId) {
@@ -182,6 +192,7 @@ router.post('/api/chat/upload', upload.single('file'), async (req, res) => {
     res.status(400).json({ success: false, error: '缺少文件' });
     return;
   }
+  if (!requireAccountSession(req, res, visitorId)) return;
   try {
     const info = await uploadFile(
       { visitorId, visitorVc, conversationId },
@@ -213,6 +224,12 @@ router.get('/api/chat/stream', (req, res) => {
   }
   if (!visitorId || !visitorVc || !conversationId) {
     res.status(400).json({ error: '会话参数缺失，请先调用 /api/chat/session' });
+    return;
+  }
+
+  const accountRec = authRecordOf(req);
+  if (accountRec && visitorId !== accountRec.user.uid) {
+    res.status(409).json({ success: false, error: '智能体会话与当前登录账号不一致，请重新申请会话' });
     return;
   }
 
@@ -332,6 +349,8 @@ router.post('/api/chat/form', (req, res) => {
     res.status(400).json({ error: '缺少表单 messageId 或字段值' });
     return;
   }
+
+  if (!requireAccountSession(req, res, visitorId)) return;
 
   // 字段值校验：name 必须为非空字符串，value 为 string 或 string[]，其余键透传
   const safeFields: RobotFormFieldValue[] = [];

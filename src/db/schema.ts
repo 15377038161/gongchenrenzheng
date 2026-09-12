@@ -4,7 +4,8 @@ import { anonRole } from 'drizzle-orm/supabase';
 
 /**
  * RLS 隔离键表达式：请求头 x-client-key（Supabase SDK global.headers 注入）
- * 访客无登录体系，以浏览器 localStorage 生成的匿名 client_key 作为隔离边界
+ * 登录用户按超星 UID 分桶，未登录访客使用浏览器 localStorage 匿名 client_key。
+ * 该键只用于数据库 RLS 隔离，不承担超星身份认证。
  */
 const clientKey = sql`(current_setting('request.headers', true)::json->>'x-client-key')`;
 
@@ -15,7 +16,7 @@ export const conversations = pgTable(
   'conversations',
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
-    /** 浏览器端生成的匿名标识（localStorage），RLS 隔离边界 */
+    /** 登录 UID 命名空间或匿名浏览器标识，作为 RLS 隔离边界 */
     client_key: varchar('client_key', { length: 64 }).notNull(),
     /** 会话标题（取首条用户消息前 24 字） */
     title: varchar('title', { length: 120 }).notNull().default('新对话'),
