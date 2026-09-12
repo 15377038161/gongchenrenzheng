@@ -1683,7 +1683,6 @@ function App() {
           </div>
           <div className="flex min-w-0 items-center gap-2.5 text-[15px] text-ink-faint">
             <span aria-hidden="true" className="hidden h-1.5 w-1.5 animate-pulse rounded-full bg-lake-deep sm:block" />
-            <span className="hidden sm:block">在线</span>
             {/* 登录入口/用户信息（2026-09 移至顶栏右上角）：未登录显示登录按钮，
                 登录后显示学通头像 + 姓名 + 退出 */}
             {authUser ? (
