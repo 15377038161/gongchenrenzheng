@@ -24,7 +24,7 @@
 ## 编码规范
 - TypeScript strict：所有参数/返回值显式标注类型，禁止隐式 any
 - React 19：不 `import React`（除非用 `React.xxx`）；禁止 JSX 内直接用 `Date.now()`/`Math.random()`
-- 前端与智能体会话映射存 localStorage（`engcert_robot_sessions`），删除会话时需同步清理
+- 前端与智能体会话映射按身份命名存入 localStorage（`engcert_robot_sessions_<uid>`；匿名为独立键），删除会话时需同步清理
 
 ## 常见问题
 - 会话列表加载失败 → 检查是否绕过了服务端代理直连 Supabase
