@@ -611,6 +611,7 @@ function App() {
   const [bgDimmed, setBgDimmed] = useState(false);
   /** 登录状态：token 经 ref 供请求闭包读取（不入 state，避免渲染耦合），用户信息展示在顶栏右上角 */
   const [authUser, setAuthUser] = useState<{ uid: string; name: string; avatar: string } | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
   const [loginOpen, setLoginOpen] = useState(false);
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
@@ -707,20 +708,10 @@ function App() {
     robotSessionsRef.current = loadRobotSessions();
     // 恢复登录状态并校验有效性
     const savedToken = localStorage.getItem('engcert_auth_token');
-    const savedUser = localStorage.getItem('engcert_auth_user');
     (async () => {
-      if (savedToken) {
+      try {
+        if (savedToken) {
         authTokenRef.current = savedToken;
-        if (savedUser) {
-          try {
-            // 同步恢复到 ref：确保首个请求发出前升级判定即可用（/me 校验异步进行，不阻塞）
-            const parsed = JSON.parse(savedUser) as { uid: string; name: string; avatar?: string };
-            // 旧缓存无 avatar 时补默认头像路径，保持类型完整
-            setAuthUserSynced({ ...parsed, avatar: parsed.avatar ?? '' });
-          } catch {
-            // 忽略损坏的用户缓存
-          }
-        }
         try {
           const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${savedToken}` } });
           const data = (await res.json()) as { login?: boolean; user?: { uid: string; name: string; avatar: string } | null };
@@ -731,8 +722,12 @@ function App() {
             setToken(null);
           }
         } catch {
-          // 校验网络失败时保留本地缓存（乐观保留，后续请求若 401 会自然清理）
+          // 校验失败时不展示缓存身份，避免“显示已登录但请求实际是游客”的假登录态。
+          setAuthUserSynced(null);
         }
+      }
+      } finally {
+        setAuthChecking(false);
       }
       await reloadConversationNamespace();
     })();
@@ -1580,9 +1575,10 @@ function App() {
 
         {/* 新建对话 */}
         <div className="px-3 py-3">
-          <button
-            type="button"
-            onClick={() => void newChat()}
+            <button
+              type="button"
+              disabled={authChecking}
+              onClick={() => void newChat()}
             className="flex w-full items-center justify-center gap-2 rounded-[10px] bg-lake-deep px-4 py-2.5 text-[17px] font-medium text-white transition-colors duration-200 hover:bg-[#2f5689] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-deep"
           >
             <span aria-hidden="true">＋</span>
